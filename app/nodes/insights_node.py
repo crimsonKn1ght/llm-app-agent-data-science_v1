@@ -39,7 +39,7 @@ async def _process_sub_query(
     max_output_tokens: int,
     conversation_summary: str,
     conversation_history: List[Dict[str, str]],
-    gemini_client: Any,
+    llm_client: Any,
 ) -> AgentResult:
     query = sub_query["query"]
     sub_id = sub_query["sub_query_id"]
@@ -47,7 +47,7 @@ async def _process_sub_query(
     user_input = _build_prompt_input(query, conversation_summary, conversation_history)
 
     try:
-        answer = await gemini_client.generate(
+        answer = await llm_client.generate(
             user_input=user_input,
             system_prompt=system_prompt,
             temperature=temperature,
@@ -85,7 +85,7 @@ async def insights_node(state: GraphState) -> Dict[str, Any]:
     tasks = [
         _process_sub_query(
             sq, system_prompt, temperature, max_output_tokens,
-            summary, history, runtime.gemini_client,
+            summary, history, runtime.llm_client,
         )
         for sq in sub_queries
     ]

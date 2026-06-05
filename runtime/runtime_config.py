@@ -5,7 +5,7 @@ from typing import Any, Optional
 
 from dotenv import load_dotenv
 
-from app.clients.gemini_client import GeminiClient
+from app.clients.claude_client import ClaudeClient
 from prompts.prompt_loader import PromptLoader
 
 
@@ -16,11 +16,11 @@ class RuntimeContext:
 
     def __init__(
         self,
-        gemini_client: GeminiClient,
+        llm_client: ClaudeClient,
         prompt_loader: PromptLoader,
         compiled_graph: Any = None,
     ):
-        self.gemini_client = gemini_client
+        self.llm_client = llm_client
         self.prompt_loader = prompt_loader
         self.compiled_graph = compiled_graph
 
@@ -29,13 +29,13 @@ _runtime: Optional[RuntimeContext] = None
 
 
 def build_runtime() -> RuntimeContext:
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    model_name = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
-    client = GeminiClient(api_key=api_key, model_name=model_name)
+    client = ClaudeClient(api_key=api_key, model_name=model_name)
     loader = PromptLoader()
 
-    return RuntimeContext(gemini_client=client, prompt_loader=loader)
+    return RuntimeContext(llm_client=client, prompt_loader=loader)
 
 
 def get_runtime() -> RuntimeContext:

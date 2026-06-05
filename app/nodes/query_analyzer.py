@@ -116,7 +116,6 @@ def _fallback_result(original_query: str, reason: str) -> Dict[str, Any]:
 async def query_analyzer_node(state: GraphState) -> Dict[str, Any]:
     runtime = state["runtime"]
     user_query = state["user_query"]
-    gemini = runtime.gemini_client
     loader = runtime.prompt_loader
     system_prompt = loader.get_system_prompt("query_analyzer")
 
@@ -126,7 +125,7 @@ async def query_analyzer_node(state: GraphState) -> Dict[str, Any]:
         user_input += f"\n\nConversation context:\n{history_context}"
 
     try:
-        raw = await gemini.generate(
+        raw = await runtime.llm_client.generate(
             user_input=user_input,
             system_prompt=system_prompt,
             temperature=loader.get_temperature("query_analyzer"),

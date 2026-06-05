@@ -21,8 +21,8 @@ async def lifespan(app: FastAPI):
     runtime.compiled_graph = build_orchestrator_graph()
     set_runtime(runtime)
     logging.getLogger(__name__).info(
-        "Runtime initialized: Gemini model=%s, prompts=%s",
-        runtime.gemini_client.model_name,
+        "Runtime initialized: Claude model=%s, prompts=%s",
+        runtime.llm_client.model_name,
         runtime.prompt_loader.list_prompts(),
     )
     yield
@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="RAG Chatbot",
-    description="Gemini-powered chatbot with LangGraph orchestration",
+    description="Claude-powered chatbot with LangGraph orchestration",
     lifespan=lifespan,
 )
 

@@ -19,7 +19,6 @@ async def compiler_node(state: GraphState) -> Dict[str, Any]:
     temperature = loader.get_temperature(_PROMPT_NAME)
     max_output_tokens = loader.get_max_tokens(_PROMPT_NAME)
 
-    gemini = runtime.gemini_client
     user_query = state["user_query"]
     queue: asyncio.Queue = state["stream_queue"]
     agent_results: List[AgentResult] = state.get("agent_results", [])
@@ -47,7 +46,7 @@ async def compiler_node(state: GraphState) -> Dict[str, Any]:
         else:
             accumulated = await _synthesize_and_stream(
                 user_query, success_results, oos_results,
-                system_prompt, temperature, max_output_tokens, gemini, queue,
+                system_prompt, temperature, max_output_tokens, runtime.llm_client, queue,
             )
     except Exception as e:
         logger.error("Compiler node failed: %s", e)
@@ -78,7 +77,7 @@ async def _synthesize_and_stream(
     system_prompt: str,
     temperature: float,
     max_output_tokens: int,
-    gemini_client: Any,
+    llm_client: Any,
     queue: asyncio.Queue,
 ) -> str:
     sub_answers = [
@@ -100,7 +99,7 @@ async def _synthesize_and_stream(
 
     accumulated = ""
     try:
-        async for chunk in gemini_client.stream(
+        async for chunk in llm_client.stream(
             user_input=user_input,
             system_prompt=system_prompt,
             temperature=temperature,
