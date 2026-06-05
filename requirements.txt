@@ -5,3 +5,4 @@ langgraph
 pydantic>=2.0
 pydantic-settings
 python-dotenv
+pyyaml

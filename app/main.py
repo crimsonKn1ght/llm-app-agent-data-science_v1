@@ -23,7 +23,7 @@ async def lifespan(app: FastAPI):
     logging.getLogger(__name__).info(
         "Runtime initialized: Gemini model=%s, prompts=%s",
         runtime.gemini_client.model_name,
-        list(runtime.prompts.keys()),
+        runtime.prompt_loader.list_prompts(),
     )
     yield
 

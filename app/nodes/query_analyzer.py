@@ -117,7 +117,8 @@ async def query_analyzer_node(state: GraphState) -> Dict[str, Any]:
     runtime = state["runtime"]
     user_query = state["user_query"]
     gemini = runtime.gemini_client
-    system_prompt = runtime.prompts.get("query_analyzer", "")
+    loader = runtime.prompt_loader
+    system_prompt = loader.get_system_prompt("query_analyzer")
 
     history_context = _build_history_context(state)
     user_input = f"Query to analyze: {user_query}"
@@ -128,8 +129,8 @@ async def query_analyzer_node(state: GraphState) -> Dict[str, Any]:
         raw = await gemini.generate(
             user_input=user_input,
             system_prompt=system_prompt,
-            temperature=0.1,
-            max_output_tokens=2048,
+            temperature=loader.get_temperature("query_analyzer"),
+            max_output_tokens=loader.get_max_tokens("query_analyzer"),
         )
         parsed = _parse_llm_output(raw)
         result = _normalize_result(parsed, user_query)
