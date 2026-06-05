@@ -85,7 +85,7 @@ def append_turn(
     return conv
 
 
-async def compress_history(conversation_id: str, gemini_client: Any, summary_prompt: str) -> None:
+async def compress_history(conversation_id: str, llm_client: Any, summary_prompt: str) -> None:
     conv = load(conversation_id)
     if conv is None:
         return
@@ -103,7 +103,7 @@ async def compress_history(conversation_id: str, gemini_client: Any, summary_pro
 
     try:
         user_input = f"Conversation to summarize:\n\n{older_text}"
-        new_summary = await gemini_client.generate(
+        new_summary = await llm_client.generate(
             user_input=user_input,
             system_prompt=summary_prompt,
             temperature=0.3,

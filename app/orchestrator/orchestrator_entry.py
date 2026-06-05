@@ -85,9 +85,9 @@ async def orchestrate(
                 conv = conversation_store.append_turn(
                     conversation_id, user_query, response_text
                 )
-                summary_prompt = runtime.prompts.get("conversation_summary", "")
+                summary_prompt = runtime.prompt_loader.get_system_prompt("conversation_summary")
                 await conversation_store.compress_history(
-                    conversation_id, runtime.gemini_client, summary_prompt
+                    conversation_id, runtime.llm_client, summary_prompt
                 )
             except Exception as e:
                 logger.error("Failed to save conversation: %s", e)

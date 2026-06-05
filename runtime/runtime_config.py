@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from dotenv import load_dotenv
 
-from app.clients.gemini_client import GeminiClient
+from app.clients.claude_client import ClaudeClient
+from prompts.prompt_loader import PromptLoader
 
 
 load_dotenv()
@@ -16,36 +16,26 @@ class RuntimeContext:
 
     def __init__(
         self,
-        gemini_client: GeminiClient,
-        prompts: Dict[str, str],
+        llm_client: ClaudeClient,
+        prompt_loader: PromptLoader,
         compiled_graph: Any = None,
     ):
-        self.gemini_client = gemini_client
-        self.prompts = prompts
+        self.llm_client = llm_client
+        self.prompt_loader = prompt_loader
         self.compiled_graph = compiled_graph
 
 
 _runtime: Optional[RuntimeContext] = None
 
 
-def _load_prompts(prompts_dir: str = "prompts") -> Dict[str, str]:
-    prompts: Dict[str, str] = {}
-    root = Path(prompts_dir)
-    if not root.exists():
-        return prompts
-    for path in root.glob("*.txt"):
-        prompts[path.stem] = path.read_text(encoding="utf-8")
-    return prompts
-
-
 def build_runtime() -> RuntimeContext:
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    model_name = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
-    client = GeminiClient(api_key=api_key, model_name=model_name)
-    prompts = _load_prompts()
+    client = ClaudeClient(api_key=api_key, model_name=model_name)
+    loader = PromptLoader()
 
-    return RuntimeContext(gemini_client=client, prompts=prompts)
+    return RuntimeContext(llm_client=client, prompt_loader=loader)
 
 
 def get_runtime() -> RuntimeContext:

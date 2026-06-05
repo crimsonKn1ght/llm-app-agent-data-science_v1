@@ -8,6 +8,8 @@ from app.orchestrator.state import AgentResult, GraphState
 
 logger = logging.getLogger(__name__)
 
+_PROMPT_NAME = "insights"
+
 
 def _build_prompt_input(
     query: str,
@@ -25,7 +27,7 @@ def _build_prompt_input(
         for msg in recent:
             role = msg.get("role", "user").upper()
             lines.append(f"{role}: {msg.get('content', '')}")
-        parts.append(f"\nRecent conversation:\n" + "\n".join(lines))
+        parts.append("\nRecent conversation:\n" + "\n".join(lines))
 
     return "\n".join(parts)
 
@@ -33,9 +35,11 @@ def _build_prompt_input(
 async def _process_sub_query(
     sub_query: Dict[str, Any],
     system_prompt: str,
+    temperature: float,
+    max_output_tokens: int,
     conversation_summary: str,
     conversation_history: List[Dict[str, str]],
-    gemini_client: Any,
+    llm_client: Any,
 ) -> AgentResult:
     query = sub_query["query"]
     sub_id = sub_query["sub_query_id"]
@@ -43,11 +47,11 @@ async def _process_sub_query(
     user_input = _build_prompt_input(query, conversation_summary, conversation_history)
 
     try:
-        answer = await gemini_client.generate(
+        answer = await llm_client.generate(
             user_input=user_input,
             system_prompt=system_prompt,
-            temperature=0.7,
-            max_output_tokens=4096,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
         )
         return {
             "sub_query_id": sub_id,
@@ -69,14 +73,20 @@ async def _process_sub_query(
 
 async def insights_node(state: GraphState) -> Dict[str, Any]:
     runtime = state["runtime"]
-    gemini = runtime.gemini_client
-    system_prompt = runtime.prompts.get("insights", "")
+    loader = runtime.prompt_loader
+    system_prompt = loader.get_system_prompt(_PROMPT_NAME)
+    temperature = loader.get_temperature(_PROMPT_NAME)
+    max_output_tokens = loader.get_max_tokens(_PROMPT_NAME)
+
     sub_queries = state["sub_queries"]
     summary = state.get("conversation_summary", "")
     history = state.get("conversation_history", [])
 
     tasks = [
-        _process_sub_query(sq, system_prompt, summary, history, gemini)
+        _process_sub_query(
+            sq, system_prompt, temperature, max_output_tokens,
+            summary, history, runtime.llm_client,
+        )
         for sq in sub_queries
     ]
     results: List[AgentResult] = await asyncio.gather(*tasks)
