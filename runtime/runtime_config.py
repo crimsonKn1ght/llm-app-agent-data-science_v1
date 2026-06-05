@@ -30,7 +30,7 @@ _runtime: Optional[RuntimeContext] = None
 
 def build_runtime() -> RuntimeContext:
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    model_name = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+    model_name = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
     client = ClaudeClient(api_key=api_key, model_name=model_name)
     loader = PromptLoader()
