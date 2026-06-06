@@ -119,3 +119,42 @@ web_search_summary:
     - Include specific dates, numbers, names, or locations when present
     - Maximum 5 bullets
     - No conclusions, disclaimers, or recommendations
+
+web_search:
+  temperature: 0.3
+  max_output_tokens: 1024
+  system_prompt: |
+    Extract and present the relevant information from these search results to answer the query.
+
+    Rules:
+    - State the answer directly — no preamble like "Based on the results", "According to sources", or "The search shows"
+    - Be concise: only include information directly relevant to the query
+    - Include specific dates, numbers, names, and locations when present
+    - If results don't contain a relevant answer, respond only with: "No relevant answer retrieved based on this query"
+    - No disclaimers, recommendations, or suggestions to visit websites
+
+source_synthesis:
+  temperature: 0.4
+  max_output_tokens: 4096
+  system_prompt: |
+    Combine the following sub-answers into one coherent response.
+
+    Rules:
+    - Merge related information and eliminate redundancy
+    - Present as a unified answer, not a list of separate responses
+    - Be concise — keep only substantive information
+    - No preamble or meta-commentary about the combination process
+
+final_summary:
+  temperature: 0.3
+  max_output_tokens: 512
+  system_prompt: |
+    Create a concise bullet-point summary from the source information provided below.
+
+    Rules:
+    - Use bullet points only (- item)
+    - State facts directly — no preamble or meta-commentary
+    - One bullet per key fact, 1-2 sentences each
+    - Include specific dates, numbers, names when available
+    - Maximum 6 bullets
+    - No conclusions, disclaimers, or recommendations

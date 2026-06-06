@@ -2,39 +2,15 @@ from __future__ import annotations
 
 from langgraph.graph import END, StateGraph
 
-from app.nodes.analytical_node import analytical_node
-from app.nodes.compiler_node import compiler_node
-from app.nodes.insights_node import insights_node
+from app.nodes.execution_node import execution_node
 from app.nodes.query_analyzer import query_analyzer_node
-from app.nodes.web_search_node import web_search_node
 from app.orchestrator.events import emit_progress
 from app.orchestrator.state import GraphState
 
 
 async def router_node(state: GraphState) -> dict:
     await emit_progress(state["stream_queue"], "Pipeline started")
-    return {
-        "execution_path": ["router_node"],
-        "expected_branches": ["internal"],
-    }
-
-
-def type_router(state: GraphState) -> str:
-    if not state.get("sub_queries"):
-        return "compiler"
-    if state.get("query_type") == "analytical":
-        return "analytical"
-    if state.get("query_type") == "web_search":
-        return "web_search"
-    return "insights"
-
-
-def branch_router(state: GraphState) -> str:
-    expected = set(state.get("expected_branches", []))
-    completed = set(state.get("completed_branches", []))
-    if expected.issubset(completed):
-        return "compiler"
-    return END
+    return {"execution_path": ["router_node"]}
 
 
 def build_orchestrator_graph():
@@ -42,37 +18,11 @@ def build_orchestrator_graph():
 
     graph.add_node("router_node", router_node)
     graph.add_node("query_analyzer", query_analyzer_node)
-    graph.add_node("analytical", analytical_node)
-    graph.add_node("insights", insights_node)
-    graph.add_node("web_search", web_search_node)
-    graph.add_node("compiler", compiler_node)
+    graph.add_node("execution", execution_node)
 
     graph.set_entry_point("router_node")
-
     graph.add_edge("router_node", "query_analyzer")
-
-    graph.add_conditional_edges("query_analyzer", type_router, {
-        "analytical": "analytical",
-        "insights": "insights",
-        "web_search": "web_search",
-        "compiler": "compiler",
-    })
-
-    graph.add_conditional_edges("analytical", branch_router, {
-        "compiler": "compiler",
-        END: END,
-    })
-
-    graph.add_conditional_edges("insights", branch_router, {
-        "compiler": "compiler",
-        END: END,
-    })
-
-    graph.add_conditional_edges("web_search", branch_router, {
-        "compiler": "compiler",
-        END: END,
-    })
-
-    graph.add_edge("compiler", END)
+    graph.add_edge("query_analyzer", "execution")
+    graph.add_edge("execution", END)
 
     return graph.compile()
