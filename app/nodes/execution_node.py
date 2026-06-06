@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-import time
+import os
 import threading
+import time
+import urllib.parse
+import urllib.request
 from typing import Any, Dict, List, Tuple
 
 from duckduckgo_search import DDGS
@@ -77,8 +81,49 @@ def _ddgs_text(query: str) -> List[Dict[str, str]]:
     return []
 
 
+def _brave_search(query: str) -> List[Dict[str, str]]:
+    api_key = os.getenv("BRAVE_SEARCH_API_KEY", "")
+    if not api_key:
+        return []
+
+    params = urllib.parse.urlencode({"q": query, "count": MAX_SEARCH_RESULTS})
+    url = f"https://api.search.brave.com/res/v1/web/search?{params}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "X-Subscription-Token": api_key,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        items = data.get("web", {}).get("results", [])
+        results = [
+            {
+                "title": item.get("title", ""),
+                "href": item.get("url", ""),
+                "body": item.get("description", ""),
+            }
+            for item in items
+        ]
+        logger.info("Brave Search returned %d results for: %s", len(results), query)
+        return results
+    except Exception as e:
+        logger.warning("Brave Search failed | error=%s: %s", type(e).__name__, e)
+        return []
+
+
 async def _search(query: str) -> List[Dict[str, str]]:
-    return await asyncio.to_thread(_ddgs_text, query)
+    results = await asyncio.to_thread(_ddgs_text, query)
+    if results:
+        return results
+
+    # DDGS exhausted all backends — fall back to Brave Search
+    if os.getenv("BRAVE_SEARCH_API_KEY"):
+        logger.info("DDGS returned no results, trying Brave Search fallback")
+        results = await asyncio.to_thread(_brave_search, query)
+    return results
 
 
 def _format_results_for_llm(results: List[Dict[str, str]]) -> str:
