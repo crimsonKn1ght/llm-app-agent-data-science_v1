@@ -42,19 +42,36 @@ def _build_qa_prompt(
     return "\n".join(parts)
 
 
+_DDGS_BACKENDS = ("auto", "html", "lite")
+
+
 def _ddgs_text(query: str) -> List[Dict[str, str]]:
-    return list(DDGS().text(query, max_results=MAX_SEARCH_RESULTS))
+    last_error: Exception | None = None
+    for backend in _DDGS_BACKENDS:
+        try:
+            with DDGS() as ddgs:
+                try:
+                    results = list(ddgs.text(
+                        query,
+                        max_results=MAX_SEARCH_RESULTS,
+                        backend=backend,
+                    ))
+                except TypeError:
+                    results = list(ddgs.text(query, max_results=MAX_SEARCH_RESULTS))
+            if results:
+                logger.info("DDGS backend=%s returned %d results for: %s", backend, len(results), query)
+                return results
+            logger.warning("DDGS backend=%s returned 0 results for: %s", backend, query)
+        except Exception as e:
+            last_error = e
+            logger.warning("DDGS backend=%s raised %s: %s", backend, type(e).__name__, e)
+    if last_error:
+        logger.error("All DDGS backends failed for %r; last error: %s", query, last_error)
+    return []
 
 
 async def _search(query: str) -> List[Dict[str, str]]:
-    try:
-        results = await asyncio.to_thread(_ddgs_text, query)
-        results = results or []
-        logger.info("DuckDuckGo returned %d results for: %s", len(results), query)
-        return results
-    except Exception as e:
-        logger.warning("DuckDuckGo search error for %r: %s", query, e)
-        return []
+    return await asyncio.to_thread(_ddgs_text, query)
 
 
 def _format_results_for_llm(results: List[Dict[str, str]]) -> str:
