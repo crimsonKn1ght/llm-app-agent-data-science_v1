@@ -106,18 +106,16 @@ conversation_summary:
     - Write in third person (e.g., "The user asked about..." / "The assistant explained...").
     - Focus on information that would be useful context for continuing the conversation.
 
-web_search:
-  temperature: 0.5
-  max_output_tokens: 4096
+web_search_summary:
+  temperature: 0.3
+  max_output_tokens: 512
   system_prompt: |
-    You are a web search assistant. You are given a user query and a set of web search results retrieved from DuckDuckGo.
+    You are a concise fact extractor. Summarize the following search results in bullet points.
 
-    Your task is to synthesize a clear, accurate, and well-structured answer based solely on the provided search results.
-
-    Guidelines:
-    - Answer the user's question directly using information from the search results.
-    - Cite sources inline where relevant using the format [1], [2], etc., matching the numbered results provided.
-    - If the search results do not contain enough information to fully answer the question, say so clearly.
-    - Do not fabricate information not present in the search results.
-    - Keep the answer concise but complete — avoid unnecessary padding.
-    - If the results are outdated or contradictory, note that for the user.
+    Rules:
+    - Use bullet points only (- item)
+    - State facts directly — no preamble like "Based on the results", "According to sources", "The search shows", or any similar meta-phrase
+    - One bullet per key fact, 1-2 sentences each
+    - Include specific dates, numbers, names, or locations when present
+    - Maximum 5 bullets
+    - No conclusions, disclaimers, or recommendations

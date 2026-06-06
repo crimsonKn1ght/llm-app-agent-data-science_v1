@@ -42,8 +42,11 @@ async def compiler_node(state: GraphState) -> Dict[str, Any]:
             await emit_text(queue, text)
             accumulated = text
         elif len(success_results) == 1 and not oos_results:
-            answer = success_results[0]["result"]
-            accumulated = await _stream_text(answer, queue)
+            if success_results[0].get("status") == "streamed":
+                accumulated = success_results[0]["result"]
+            else:
+                answer = success_results[0]["result"]
+                accumulated = await _stream_text(answer, queue)
         else:
             await emit_progress(queue, f"Synthesizing response from {len(success_results)} source(s)...")
             accumulated = await _synthesize_and_stream(
@@ -56,7 +59,7 @@ async def compiler_node(state: GraphState) -> Dict[str, Any]:
         await emit_text(queue, error_text)
         accumulated = error_text
     finally:
-        await queue.put(None)
+        queue.put_nowait(None)
 
     return {
         "execution_path": ["compiler"],

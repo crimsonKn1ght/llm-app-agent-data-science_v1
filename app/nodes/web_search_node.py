@@ -6,13 +6,14 @@ from typing import Any, Dict, List
 
 from duckduckgo_search import DDGS
 
-from app.orchestrator.events import emit_progress
+from app.orchestrator.events import emit_final_response, emit_progress, emit_text
 from app.orchestrator.state import AgentResult, GraphState
 
 logger = logging.getLogger(__name__)
 
-_PROMPT_NAME = "web_search"
+_SUMMARY_PROMPT = "web_search_summary"
 MAX_SEARCH_RESULTS = 5
+NO_ANSWER = "No relevant answer retrieved based on this query"
 
 
 def _ddgs_text(query: str) -> List[Dict[str, str]]:
@@ -28,9 +29,9 @@ async def _search(query: str) -> List[Dict[str, str]]:
         return []
 
 
-def _format_results(results: List[Dict[str, str]]) -> str:
+def _format_results_for_llm(results: List[Dict[str, str]]) -> str:
     if not results:
-        return "No search results were found for this query."
+        return "No search results found."
     lines = []
     for i, r in enumerate(results, start=1):
         title = r.get("title", "No title")
@@ -45,69 +46,87 @@ def _format_results(results: List[Dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
-async def _process_sub_query(
-    sub_query: Dict[str, Any],
-    system_prompt: str,
-    temperature: float,
-    max_output_tokens: int,
-    llm_client: Any,
-) -> AgentResult:
+async def web_search_node(state: GraphState) -> Dict[str, Any]:
+    runtime = state["runtime"]
+    loader = runtime.prompt_loader
+    queue = state["stream_queue"]
+
+    await emit_progress(queue, "Searching the web...")
+
+    sub_query = state["sub_queries"][0]
     query = sub_query["query"]
     sub_id = sub_query["sub_query_id"]
 
     search_results = await _search(query)
-    formatted = _format_results(search_results)
 
-    user_input = f"User query: {query}\n\nWeb search results:\n{formatted}"
+    # --- Stream each source immediately after search returns ---
+    source_blocks: List[str] = []
 
-    try:
-        answer = await llm_client.generate(
-            user_input=user_input,
-            system_prompt=system_prompt,
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,
-        )
-        status = "success" if search_results else "error"
-        return {
-            "sub_query_id": sub_id,
-            "query": query,
-            "agent_type": "web_search",
-            "result": answer,
-            "status": status,
-        }
-    except Exception as e:
-        logger.error("Web search node failed for sub_query %d: %s", sub_id, e)
-        return {
-            "sub_query_id": sub_id,
-            "query": query,
-            "agent_type": "web_search",
-            "result": f"Failed to generate an answer from search results: {e}",
-            "status": "error",
-        }
+    if not search_results:
+        block = NO_ANSWER
+        await emit_text(queue, block + "\n")
+        source_blocks.append(block)
+    else:
+        for i, r in enumerate(search_results, start=1):
+            title = r.get("title", "No title")
+            url = r.get("href", "")
+            body = (r.get("body", "") or "").strip() or NO_ANSWER
 
+            block = f"**[{i}] {title}**"
+            if url:
+                block += f"\n{url}"
+            block += f"\n{body}"
+            source_blocks.append(block)
+            await emit_text(queue, block + "\n\n")
 
-async def web_search_node(state: GraphState) -> Dict[str, Any]:
-    runtime = state["runtime"]
-    loader = runtime.prompt_loader
-    system_prompt = loader.get_system_prompt(_PROMPT_NAME)
-    temperature = loader.get_temperature(_PROMPT_NAME)
-    max_output_tokens = loader.get_max_tokens(_PROMPT_NAME)
+    sources_section = "\n\n".join(source_blocks)
 
-    await emit_progress(state["stream_queue"], "Searching the web...")
+    # --- LLM summary: bullet-point synthesis, streamed ---
+    summary_text = ""
+    if search_results:
+        await emit_progress(queue, "Generating summary...")
 
-    sub_queries = state["sub_queries"]
+        system_prompt = loader.get_system_prompt(_SUMMARY_PROMPT)
+        temperature = loader.get_temperature(_SUMMARY_PROMPT)
+        max_output_tokens = loader.get_max_tokens(_SUMMARY_PROMPT)
 
-    tasks = [
-        _process_sub_query(
-            sq, system_prompt, temperature, max_output_tokens,
-            runtime.llm_client,
-        )
-        for sq in sub_queries
-    ]
-    results: List[AgentResult] = await asyncio.gather(*tasks)
+        user_input = f"Query: {query}\n\nSearch results:\n{_format_results_for_llm(search_results)}"
+
+        divider = "\n---\n\n**Summary**\n"
+        await emit_text(queue, divider)
+        summary_text = divider
+
+        try:
+            async for chunk in runtime.llm_client.stream(
+                user_input=user_input,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+            ):
+                await emit_text(queue, chunk)
+                summary_text += chunk
+        except Exception as e:
+            logger.error("Web search summary failed: %s", e)
+            err = "Summary generation failed."
+            await emit_text(queue, err)
+            summary_text += err
+
+    # --- Emit structured final_response (summary first, then sources) ---
+    if summary_text.strip():
+        structured = summary_text.strip() + "\n\n---\n\n**Sources**\n\n" + sources_section
+    else:
+        structured = sources_section
+
+    await emit_final_response(queue, structured)
 
     return {
         "execution_path": ["web_search"],
         "completed_branches": ["internal"],
-        "agent_results": list(results),
+        "agent_results": [{
+            "sub_query_id": sub_id,
+            "query": query,
+            "agent_type": "web_search",
+            "result": structured,
+            "status": "streamed",
+        }],
     }
