@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import threading
 from typing import Any, Dict, List, Tuple
 
 from duckduckgo_search import DDGS
@@ -44,11 +45,14 @@ def _build_qa_prompt(
 
 
 _DDGS_BACKENDS = ("auto", "html", "lite")
+_DDGS_RETRY_DELAY = 1.5  # seconds between backend attempts
 
 
 def _ddgs_text(query: str) -> List[Dict[str, str]]:
     last_error: Exception | None = None
-    for backend in _DDGS_BACKENDS:
+    for i, backend in enumerate(_DDGS_BACKENDS):
+        if i > 0:
+            threading.Event().wait(_DDGS_RETRY_DELAY)  # short pause before next backend
         try:
             with DDGS() as ddgs:
                 try:
@@ -68,6 +72,8 @@ def _ddgs_text(query: str) -> List[Dict[str, str]]:
             logger.warning("DDGS backend=%s raised %s: %s", backend, type(e).__name__, e)
     if last_error:
         logger.error("All DDGS backends failed for %r; last error: %s", query, last_error)
+    else:
+        logger.error("All DDGS backends returned 0 results for %r", query)
     return []
 
 
@@ -420,14 +426,10 @@ async def execution_node(state: GraphState) -> Dict[str, Any]:
                     h, time.perf_counter() - t_src, len(content),
                 )
 
-    # ── Summary: always runs unless every source was empty ──
-    has_useful_content = any(
-        c.strip() and c.strip() != NO_RELEVANT_ANSWER
-        for c in source_contents.values()
-    )
+    # ── Summary: always runs, even when sources returned no results ──
     summary_text = ""
 
-    if has_useful_content:
+    if source_contents:
         t_sum = time.perf_counter()
         logger.info("Summary generation started")
         await emit_progress(queue, "Generating summary...", origin="summary")
@@ -462,7 +464,7 @@ async def execution_node(state: GraphState) -> Dict[str, Any]:
                 summary_text = "Summary generation failed."
                 await emit_text(queue, summary_text, origin="summary")
     else:
-        logger.info("Summary skipped — no useful source content")
+        logger.info("Summary skipped — no source content at all")
 
     # ── Build structured final_response ──
     final_parts: List[str] = []

@@ -159,3 +159,5 @@ final_summary:
     - Include specific dates, numbers, names when available
     - Maximum 6 bullets
     - No conclusions, disclaimers, or recommendations
+    - If all sources indicate no information was retrieved, produce a single bullet:
+      "- No information could be retrieved for this query at this time."
