@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from typing import Any, Dict, Optional
 
+from app.logging_config import set_conversation_id
 from app.memory import conversation_store
 from app.orchestrator.state import GraphState
 from runtime.runtime_config import get_runtime
@@ -17,23 +19,30 @@ async def orchestrate(
     conversation_id: Optional[str],
     stream_queue: asyncio.Queue,
 ) -> str:
-    runtime = get_runtime()
-
     if not conversation_id:
         conversation_id = str(uuid.uuid4())
 
-    conversation_history = []
+    # Stamp every log line in this request with the conversation ID
+    set_conversation_id(conversation_id)
+
+    t_start = time.perf_counter()
+    query_preview = user_query[:100] + "..." if len(user_query) > 100 else user_query
+    logger.info("Request received | query=%r | query_len=%d", query_preview, len(user_query))
+
+    runtime = get_runtime()
+    conversation_history: list = []
     conversation_summary = ""
 
     conv_data = conversation_store.load(conversation_id)
     if conv_data is not None:
         conversation_history, conversation_summary = conversation_store.build_context(conv_data)
         logger.info(
-            "Loaded conversation %s: %d history messages, summary length %d",
-            conversation_id,
+            "Conversation context loaded | history_turns=%d | has_summary=%s",
             len(conversation_history),
-            len(conversation_summary),
+            bool(conversation_summary),
         )
+    else:
+        logger.info("New conversation started")
 
     initial_state: GraphState = {
         "user_query": user_query,
@@ -59,14 +68,21 @@ async def orchestrate(
     try:
         final_state = await runtime.compiled_graph.ainvoke(initial_state)
         final_response = final_state.get("final_response", "")
+        elapsed = time.perf_counter() - t_start
         logger.info(
-            "Graph completed. Path: %s",
+            "Pipeline completed | path=%s | response_chars=%d | elapsed=%.2fs",
             " -> ".join(final_state.get("execution_path", [])),
+            len(final_response),
+            elapsed,
         )
         return final_response
 
     except Exception as e:
-        logger.error("Graph execution failed: %s", e, exc_info=True)
+        elapsed = time.perf_counter() - t_start
+        logger.error(
+            "Pipeline failed | elapsed=%.2fs | error=%s",
+            elapsed, e, exc_info=True,
+        )
         error_msg = f"An error occurred while processing your request: {e}"
         try:
             stream_queue.put_nowait({"type": "error", "message": error_msg})
@@ -82,12 +98,11 @@ async def orchestrate(
 
         if response_text:
             try:
-                conv = conversation_store.append_turn(
-                    conversation_id, user_query, response_text
-                )
+                conversation_store.append_turn(conversation_id, user_query, response_text)
                 summary_prompt = runtime.prompt_loader.get_system_prompt("conversation_summary")
                 await conversation_store.compress_history(
                     conversation_id, runtime.llm_client, summary_prompt
                 )
+                logger.info("Conversation turn saved | conv_id=%s", conversation_id)
             except Exception as e:
-                logger.error("Failed to save conversation: %s", e)
+                logger.error("Failed to save conversation | error=%s", e)

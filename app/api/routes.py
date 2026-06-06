@@ -47,31 +47,41 @@ async def generate(request: ChatRequest):
                     break
                 if isinstance(item, dict):
                     event_type = item.get("type", "text")
+                    origin = item.get("origin", "")
+
                     if event_type == "progress":
-                        line = json.dumps({
+                        payload: dict = {
                             "type": "progress",
                             "message": item["message"],
                             "is_final": False,
-                        })
-                        yield (line + "\n").encode("utf-8")
+                        }
+                        if origin:
+                            payload["origin"] = origin
+                        yield (json.dumps(payload) + "\n").encode("utf-8")
+
                     elif event_type == "final_response":
                         final_response_override = item["content"]
+
                     elif event_type == "error":
-                        line = json.dumps({
+                        payload = {
                             "type": "error",
                             "message": item["message"],
                             "is_final": False,
-                        })
-                        yield (line + "\n").encode("utf-8")
+                        }
+                        yield (json.dumps(payload) + "\n").encode("utf-8")
+
                     else:
                         text = item.get("text", "")
                         accumulated += text
-                        line = json.dumps({
+                        payload = {
                             "type": "text",
                             "text": text,
                             "is_final": False,
-                        })
-                        yield (line + "\n").encode("utf-8")
+                        }
+                        if origin:
+                            payload["origin"] = origin
+                        yield (json.dumps(payload) + "\n").encode("utf-8")
+
                 else:
                     accumulated += item
                     line = json.dumps({
@@ -80,6 +90,7 @@ async def generate(request: ChatRequest):
                         "is_final": False,
                     })
                     yield (line + "\n").encode("utf-8")
+
         except asyncio.TimeoutError:
             logger.warning("Stream timed out after 120s")
             accumulated += "\n[Stream timed out]"
