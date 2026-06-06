@@ -4,6 +4,7 @@ import asyncio
 import logging
 from typing import Any, Dict, List
 
+from app.orchestrator.events import emit_progress, emit_text
 from app.orchestrator.state import AgentResult, GraphState
 
 logger = logging.getLogger(__name__)
@@ -32,18 +33,19 @@ async def compiler_node(state: GraphState) -> Dict[str, Any]:
     try:
         if not success_results and not error_results:
             text = OUT_OF_SCOPE_MSG
-            await queue.put(text)
+            await emit_text(queue, text)
             accumulated = text
         elif not success_results and error_results:
             text = "I encountered errors while processing your request. Please try again."
             for er in error_results:
                 text += f"\n\n**Error for:** {er['query']}\n{er['result']}"
-            await queue.put(text)
+            await emit_text(queue, text)
             accumulated = text
         elif len(success_results) == 1 and not oos_results:
             answer = success_results[0]["result"]
             accumulated = await _stream_text(answer, queue)
         else:
+            await emit_progress(queue, f"Synthesizing response from {len(success_results)} source(s)...")
             accumulated = await _synthesize_and_stream(
                 user_query, success_results, oos_results,
                 system_prompt, temperature, max_output_tokens, runtime.llm_client, queue,
@@ -51,7 +53,7 @@ async def compiler_node(state: GraphState) -> Dict[str, Any]:
     except Exception as e:
         logger.error("Compiler node failed: %s", e)
         error_text = f"An error occurred while compiling the response: {e}"
-        await queue.put(error_text)
+        await emit_text(queue, error_text)
         accumulated = error_text
     finally:
         await queue.put(None)
@@ -65,7 +67,7 @@ async def compiler_node(state: GraphState) -> Dict[str, Any]:
 async def _stream_text(text: str, queue: asyncio.Queue) -> str:
     chunk_size = 80
     for i in range(0, len(text), chunk_size):
-        await queue.put(text[i : i + chunk_size])
+        await emit_text(queue, text[i : i + chunk_size])
         await asyncio.sleep(0)
     return text
 
@@ -105,17 +107,17 @@ async def _synthesize_and_stream(
             temperature=temperature,
             max_output_tokens=max_output_tokens,
         ):
-            await queue.put(chunk)
+            await emit_text(queue, chunk)
             accumulated += chunk
     except Exception as e:
         logger.error("Streaming synthesis failed: %s", e)
         fallback = "\n\n---\n\n".join(r["result"] for r in success_results)
         if accumulated:
             remaining = fallback[len(accumulated):]
-            await queue.put(remaining)
+            await emit_text(queue, remaining)
             accumulated += remaining
         else:
-            await queue.put(fallback)
+            await emit_text(queue, fallback)
             accumulated = fallback
 
     return accumulated

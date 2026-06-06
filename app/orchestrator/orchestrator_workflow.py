@@ -7,10 +7,12 @@ from app.nodes.compiler_node import compiler_node
 from app.nodes.insights_node import insights_node
 from app.nodes.query_analyzer import query_analyzer_node
 from app.nodes.web_search_node import web_search_node
+from app.orchestrator.events import emit_progress
 from app.orchestrator.state import GraphState
 
 
 async def router_node(state: GraphState) -> dict:
+    await emit_progress(state["stream_queue"], "Pipeline started")
     return {
         "execution_path": ["router_node"],
         "expected_branches": ["internal"],

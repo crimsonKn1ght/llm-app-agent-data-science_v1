@@ -30,7 +30,7 @@ async def generate(request: ChatRequest):
         except Exception as e:
             logger.error("Orchestration failed: %s", e)
             try:
-                await queue.put(json.dumps({"error": str(e)}))
+                await queue.put({"type": "error", "message": str(e)})
                 await queue.put(None)
             except Exception:
                 pass
@@ -41,16 +41,38 @@ async def generate(request: ChatRequest):
         accumulated = ""
         try:
             while True:
-                chunk = await asyncio.wait_for(queue.get(), timeout=120.0)
-                if chunk is None:
+                item = await asyncio.wait_for(queue.get(), timeout=120.0)
+                if item is None:
                     break
-                accumulated += chunk
-                line = json.dumps({
-                    "text": chunk,
-                    "is_final": False,
-                    "full_response": None,
-                    "error": None,
-                })
+                if isinstance(item, dict):
+                    event_type = item.get("type", "text")
+                    if event_type == "progress":
+                        line = json.dumps({
+                            "type": "progress",
+                            "message": item["message"],
+                            "is_final": False,
+                        })
+                    elif event_type == "error":
+                        line = json.dumps({
+                            "type": "error",
+                            "message": item["message"],
+                            "is_final": False,
+                        })
+                    else:
+                        text = item.get("text", "")
+                        accumulated += text
+                        line = json.dumps({
+                            "type": "text",
+                            "text": text,
+                            "is_final": False,
+                        })
+                else:
+                    accumulated += item
+                    line = json.dumps({
+                        "type": "text",
+                        "text": item,
+                        "is_final": False,
+                    })
                 yield (line + "\n").encode("utf-8")
         except asyncio.TimeoutError:
             logger.warning("Stream timed out after 120s")
@@ -59,10 +81,10 @@ async def generate(request: ChatRequest):
             logger.error("Stream error: %s", e)
 
         final_line = json.dumps({
+            "type": "text",
             "text": "",
             "is_final": True,
             "full_response": accumulated,
-            "error": None,
         })
         yield (final_line + "\n").encode("utf-8")
 

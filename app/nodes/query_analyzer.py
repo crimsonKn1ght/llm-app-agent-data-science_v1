@@ -4,6 +4,7 @@ import json
 import logging
 from typing import Any, Dict, List
 
+from app.orchestrator.events import emit_progress
 from app.orchestrator.state import AgentResult, DecomposedQuery, GraphState
 
 logger = logging.getLogger(__name__)
@@ -130,8 +131,11 @@ def _fallback_result(original_query: str, reason: str) -> Dict[str, Any]:
 async def query_analyzer_node(state: GraphState) -> Dict[str, Any]:
     runtime = state["runtime"]
     user_query = state["user_query"]
+    queue = state["stream_queue"]
     loader = runtime.prompt_loader
     system_prompt = loader.get_system_prompt("query_analyzer")
+
+    await emit_progress(queue, "Analyzing your query...")
 
     history_context = _build_history_context(state)
     user_input = f"Query to analyze: {user_query}"
@@ -176,6 +180,15 @@ async def query_analyzer_node(state: GraphState) -> Dict[str, Any]:
                 "scope_reasoning": sq.get("scope_reasoning", ""),
                 "tool_hint": sq.get("tool_hint", "insights"),
             })
+
+    if is_complex and len(in_scope_queries) > 1:
+        parts = "\n".join(
+            f"  {sq['sub_query_id']}. {sq['query']}" for sq in in_scope_queries
+        )
+        await emit_progress(
+            queue,
+            f"Your query was decomposed into {len(in_scope_queries)} parts:\n{parts}",
+        )
 
     return {
         "execution_path": ["query_analyzer"],
