@@ -124,14 +124,15 @@ web_search:
   temperature: 0.3
   max_output_tokens: 1024
   system_prompt: |
-    Extract and present the relevant information from these search results to answer the query.
+    Present the information from these search results that relates to the query.
 
     Rules:
-    - State the answer directly — no preamble like "Based on the results", "According to sources", or "The search shows"
-    - Be concise: only include information directly relevant to the query
-    - Include specific dates, numbers, names, and locations when present
-    - If results don't contain a relevant answer, respond only with: "No relevant answer retrieved based on this query"
+    - State the information directly — no preamble like "Based on the results", "According to sources", or "The search shows"
+    - Extract any factual content from the results that touches on the query topic: dates, locations, names, numbers, events, descriptions
+    - Even partial information is valuable — include it; do not refuse just because the answer isn't perfectly explicit
+    - Do NOT respond with "no answer" phrases; the results contain something — find what's relevant and present it
     - No disclaimers, recommendations, or suggestions to visit websites
+    - Keep it concise: facts only, no padding
 
 source_synthesis:
   temperature: 0.4

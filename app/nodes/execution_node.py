@@ -49,9 +49,11 @@ def _ddgs_text(query: str) -> List[Dict[str, str]]:
 async def _search(query: str) -> List[Dict[str, str]]:
     try:
         results = await asyncio.to_thread(_ddgs_text, query)
-        return results or []
+        results = results or []
+        logger.info("DuckDuckGo returned %d results for: %s", len(results), query)
+        return results
     except Exception as e:
-        logger.warning("DuckDuckGo search error: %s", e)
+        logger.warning("DuckDuckGo search error for %r: %s", query, e)
         return []
 
 
@@ -370,11 +372,14 @@ async def execution_node(state: GraphState) -> Dict[str, Any]:
 
                 source_contents[h] = content
 
-    # ── Summary (only when multi-query or multi-source) ──
-    needs_summary = len(sub_queries) > 1 or len(groups) > 1
+    # ── Summary: always runs unless every source was empty ──
+    has_useful_content = any(
+        c.strip() and c.strip() != NO_RELEVANT_ANSWER
+        for c in source_contents.values()
+    )
     summary_text = ""
 
-    if needs_summary:
+    if has_useful_content:
         await emit_progress(queue, "Generating summary...", origin="summary")
         await emit_text(queue, "\n## Summary\n", origin="summary")
 
