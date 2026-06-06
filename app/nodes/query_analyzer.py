@@ -152,7 +152,7 @@ async def query_analyzer_node(state: GraphState) -> Dict[str, Any]:
         parsed = _parse_llm_output(raw)
         result = _normalize_result(parsed, user_query)
     except Exception as e:
-        logger.warning("Query analyzer failed, using fallback: %s", e)
+        logger.warning("Query analyzer LLM failed, using insights fallback | error=%s", e)
         result = _fallback_result(user_query, str(e))
 
     query_type = result["query_type"]
@@ -188,6 +188,21 @@ async def query_analyzer_node(state: GraphState) -> Dict[str, Any]:
         await emit_progress(
             queue,
             f"Your query was decomposed into {len(in_scope_queries)} parts:\n{parts}",
+        )
+
+    logger.info(
+        "Query classified | type=%s | is_complex=%s | in_scope=%d | out_of_scope=%d",
+        query_type, is_complex, len(in_scope_queries), len(out_of_scope_results),
+    )
+    for sq in in_scope_queries:
+        logger.debug(
+            "Sub-query %d | tool=%s | query=%r",
+            sq["sub_query_id"], sq["tool_hint"], sq["query"],
+        )
+    if out_of_scope_results:
+        logger.info(
+            "Out-of-scope sub-queries: %s",
+            [r["query"] for r in out_of_scope_results],
         )
 
     return {

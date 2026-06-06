@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Dict, List, Tuple
 
 from duckduckgo_search import DDGS
@@ -284,9 +285,11 @@ async def execution_node(state: GraphState) -> Dict[str, Any]:
     runtime = state["runtime"]
     sub_queries = state["sub_queries"]
     user_query = state["user_query"]
+    t_exec_start = time.perf_counter()
 
     # Handle empty (all out-of-scope)
     if not sub_queries:
+        logger.info("All sub-queries out of scope — skipping execution")
         msg = "This question is outside the scope of what I can help with."
         await emit_text(queue, msg)
         queue.put_nowait(None)
@@ -302,6 +305,12 @@ async def execution_node(state: GraphState) -> Dict[str, Any]:
         hint = sq.get("tool_hint", "insights")
         groups.setdefault(hint, []).append(sq)
 
+    logger.info(
+        "Execution started | sources=%s | total_sub_queries=%d",
+        {h: len(qs) for h, qs in groups.items()},
+        len(sub_queries),
+    )
+
     is_single_source = len(groups) == 1
     all_agent_results: List[AgentResult] = []
     source_contents: Dict[str, str] = {}
@@ -315,41 +324,58 @@ async def execution_node(state: GraphState) -> Dict[str, Any]:
         await emit_progress(queue, PROGRESS_MESSAGES.get(hint, f"Processing {hint}..."), origin=origin)
         await emit_text(queue, header + "\n", origin=origin)
 
+        t_src = time.perf_counter()
         if len(queries) == 1:
             # ── Single source, single query → stream directly ──
+            logger.info("Source %s | 1 query | streaming directly", hint)
             if hint == "web_search":
                 content = await _stream_single_web(queries[0], queue, state)
             else:
                 content = await _stream_single_qa(queries[0], hint, queue, origin, state)
 
+            status = "success" if content != NO_RELEVANT_ANSWER else "no_results"
             all_agent_results.append({
                 "sub_query_id": queries[0]["sub_query_id"],
                 "query": queries[0]["query"],
                 "agent_type": hint,
                 "result": content,
-                "status": "success" if content != NO_RELEVANT_ANSWER else "error",
+                "status": status,
             })
         else:
             # ── Single source, multi-query → generate all, compile + stream ──
+            logger.info("Source %s | %d queries | generating concurrently then compiling", hint, len(queries))
             tasks = [_generate_one(hint, sq, state) for sq in queries]
             results = await asyncio.gather(*tasks)
             all_agent_results.extend(results)
 
             success = [r for r in results if r["status"] == "success"]
+            logger.info(
+                "Source %s | %d/%d sub-queries succeeded",
+                hint, len(success), len(results),
+            )
             if success:
                 content = await _compile_and_stream(success, queue, origin, state)
             else:
                 content = NO_RELEVANT_ANSWER
                 await emit_text(queue, content + "\n", origin=origin)
 
+        elapsed_src = time.perf_counter() - t_src
+        logger.info(
+            "Source %s completed | elapsed=%.2fs | result_chars=%d",
+            hint, elapsed_src, len(content),
+        )
         source_contents[hint] = content
 
     else:
         # ── Multiple source types → generate concurrently, stream in completion order ──
 
         async def _process_source(h: str, qs: List[Dict[str, Any]]) -> List[AgentResult]:
+            t0 = time.perf_counter()
+            logger.info("Source %s | %d quer%s | starting", h, len(qs), "y" if len(qs) == 1 else "ies")
             coros = [_generate_one(h, sq, state) for sq in qs]
-            return list(await asyncio.gather(*coros))
+            res = list(await asyncio.gather(*coros))
+            logger.info("Source %s | generation done | elapsed=%.2fs", h, time.perf_counter() - t0)
+            return res
 
         for h in groups:
             await emit_progress(queue, PROGRESS_MESSAGES.get(h, f"Processing {h}..."), origin=h)
@@ -369,6 +395,7 @@ async def execution_node(state: GraphState) -> Dict[str, Any]:
             for task in done:
                 h = task_to_hint[task]
                 remaining.discard(h)
+                t_src = time.perf_counter()
 
                 results = task.result()
                 all_agent_results.extend(results)
@@ -388,6 +415,10 @@ async def execution_node(state: GraphState) -> Dict[str, Any]:
                     content = await _compile_and_stream(success, queue, origin, state)
 
                 source_contents[h] = content
+                logger.info(
+                    "Source %s streamed | elapsed=%.2fs | result_chars=%d",
+                    h, time.perf_counter() - t_src, len(content),
+                )
 
     # ── Summary: always runs unless every source was empty ──
     has_useful_content = any(
@@ -397,6 +428,8 @@ async def execution_node(state: GraphState) -> Dict[str, Any]:
     summary_text = ""
 
     if has_useful_content:
+        t_sum = time.perf_counter()
+        logger.info("Summary generation started")
         await emit_progress(queue, "Generating summary...", origin="summary")
         await emit_text(queue, "\n## Summary\n", origin="summary")
 
@@ -419,11 +452,17 @@ async def execution_node(state: GraphState) -> Dict[str, Any]:
             ):
                 await emit_text(queue, chunk, origin="summary")
                 summary_text += chunk
+            logger.info(
+                "Summary completed | elapsed=%.2fs | chars=%d",
+                time.perf_counter() - t_sum, len(summary_text),
+            )
         except Exception as e:
-            logger.error("Summary generation failed: %s", e)
+            logger.error("Summary generation failed | error=%s", e)
             if not summary_text:
                 summary_text = "Summary generation failed."
                 await emit_text(queue, summary_text, origin="summary")
+    else:
+        logger.info("Summary skipped — no useful source content")
 
     # ── Build structured final_response ──
     final_parts: List[str] = []
@@ -433,6 +472,15 @@ async def execution_node(state: GraphState) -> Dict[str, Any]:
         header = SOURCE_HEADERS.get(h, f"## {h.replace('_', ' ').title()}")
         final_parts.append(header + "\n" + source_contents[h])
     final_response = "\n\n".join(final_parts)
+
+    total_elapsed = time.perf_counter() - t_exec_start
+    logger.info(
+        "Execution completed | sources=%d | summary=%s | response_chars=%d | elapsed=%.2fs",
+        len(source_contents),
+        "yes" if summary_text else "no",
+        len(final_response),
+        total_elapsed,
+    )
 
     await emit_final_response(queue, final_response)
     queue.put_nowait(None)
