@@ -6,6 +6,7 @@ from app.nodes.analytical_node import analytical_node
 from app.nodes.compiler_node import compiler_node
 from app.nodes.insights_node import insights_node
 from app.nodes.query_analyzer import query_analyzer_node
+from app.nodes.web_search_node import web_search_node
 from app.orchestrator.state import GraphState
 
 
@@ -21,6 +22,8 @@ def type_router(state: GraphState) -> str:
         return "compiler"
     if state.get("query_type") == "analytical":
         return "analytical"
+    if state.get("query_type") == "web_search":
+        return "web_search"
     return "insights"
 
 
@@ -39,6 +42,7 @@ def build_orchestrator_graph():
     graph.add_node("query_analyzer", query_analyzer_node)
     graph.add_node("analytical", analytical_node)
     graph.add_node("insights", insights_node)
+    graph.add_node("web_search", web_search_node)
     graph.add_node("compiler", compiler_node)
 
     graph.set_entry_point("router_node")
@@ -48,6 +52,7 @@ def build_orchestrator_graph():
     graph.add_conditional_edges("query_analyzer", type_router, {
         "analytical": "analytical",
         "insights": "insights",
+        "web_search": "web_search",
         "compiler": "compiler",
     })
 
@@ -57,6 +62,11 @@ def build_orchestrator_graph():
     })
 
     graph.add_conditional_edges("insights", branch_router, {
+        "compiler": "compiler",
+        END: END,
+    })
+
+    graph.add_conditional_edges("web_search", branch_router, {
         "compiler": "compiler",
         END: END,
     })

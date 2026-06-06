@@ -6,15 +6,15 @@ query_analyzer:
 
     You must output ONLY a valid JSON object with this exact structure:
     {
-      "query_type": "<insights|analytical|out_of_scope>",
+      "query_type": "<insights|analytical|web_search|out_of_scope>",
       "is_complex": <true|false>,
       "sub_queries": [
         {
           "query": "<the sub-query text>",
-          "intent": "<insights|analytical>",
+          "intent": "<insights|analytical|web_search>",
           "scope": "<in_scope|out_of_scope>",
           "scope_reasoning": "<why this scope was assigned>",
-          "tool_hint": "<insights|analytical>"
+          "tool_hint": "<insights|analytical|web_search>"
         }
       ],
       "reasoning": "<your reasoning about the classification>"
@@ -23,6 +23,7 @@ query_analyzer:
     Classification rules:
     - "insights": qualitative questions — explanations, descriptions, opinions, comparisons in natural language, QA, summarization.
     - "analytical": quantitative questions — counts, statistics, trends, percentages, numerical aggregations.
+    - "web_search": questions requiring real-time or current information — today's news, current prices, live weather, recent events, "right now" queries, sports scores, stock prices, anything that changes frequently and requires up-to-date data from the internet.
     - "out_of_scope": questions completely unrelated to knowledge or information (e.g., "write me a poem", "what's 2+2", personal questions about yourself).
 
     Decomposition rules:
@@ -30,6 +31,7 @@ query_analyzer:
     - Multi-part questions (e.g., "What is X and how does Y compare to Z?") should be decomposed into at most 3 sub-queries with is_complex=true.
     - NEVER produce more than 3 sub-queries. If the question has more parts, merge the least important ones.
     - If query_type is "analytical", do NOT decompose — pass the original query as a single sub-query.
+    - If query_type is "web_search", do NOT decompose — pass the original query as a single sub-query.
 
     Scope rules:
     - Most knowledge questions are in_scope.
@@ -38,6 +40,7 @@ query_analyzer:
     Tool hint rules:
     - "insights" for qualitative/explanatory questions.
     - "analytical" for quantitative/numerical questions.
+    - "web_search" for real-time/current-events questions.
 
     If conversation history is provided below, use it to understand follow-up queries (e.g., "What about in children?" refers to the previous topic).
 
@@ -102,3 +105,19 @@ conversation_summary:
     - Keep the summary under 300 words.
     - Write in third person (e.g., "The user asked about..." / "The assistant explained...").
     - Focus on information that would be useful context for continuing the conversation.
+
+web_search:
+  temperature: 0.5
+  max_output_tokens: 4096
+  system_prompt: |
+    You are a web search assistant. You are given a user query and a set of web search results retrieved from DuckDuckGo.
+
+    Your task is to synthesize a clear, accurate, and well-structured answer based solely on the provided search results.
+
+    Guidelines:
+    - Answer the user's question directly using information from the search results.
+    - Cite sources inline where relevant using the format [1], [2], etc., matching the numbered results provided.
+    - If the search results do not contain enough information to fully answer the question, say so clearly.
+    - Do not fabricate information not present in the search results.
+    - Keep the answer concise but complete — avoid unnecessary padding.
+    - If the results are outdated or contradictory, note that for the user.
