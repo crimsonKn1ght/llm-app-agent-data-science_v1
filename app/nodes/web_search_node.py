@@ -4,9 +4,9 @@ import asyncio
 import logging
 from typing import Any, Dict, List
 
-from duckduckgo_search import AsyncDDGS
-from duckduckgo_search.exceptions import DuckDuckGoSearchException
+from duckduckgo_search import DDGS
 
+from app.orchestrator.events import emit_progress
 from app.orchestrator.state import AgentResult, GraphState
 
 logger = logging.getLogger(__name__)
@@ -15,15 +15,16 @@ _PROMPT_NAME = "web_search"
 MAX_SEARCH_RESULTS = 5
 
 
+def _ddgs_text(query: str) -> List[Dict[str, str]]:
+    return list(DDGS().text(query, max_results=MAX_SEARCH_RESULTS))
+
+
 async def _search(query: str) -> List[Dict[str, str]]:
     try:
-        results = await AsyncDDGS().atext(query, max_results=MAX_SEARCH_RESULTS)
+        results = await asyncio.to_thread(_ddgs_text, query)
         return results or []
-    except DuckDuckGoSearchException as e:
-        logger.warning("DuckDuckGo search error: %s", e)
-        return []
     except Exception as e:
-        logger.error("Unexpected search error: %s", e)
+        logger.warning("DuckDuckGo search error: %s", e)
         return []
 
 
@@ -91,6 +92,8 @@ async def web_search_node(state: GraphState) -> Dict[str, Any]:
     system_prompt = loader.get_system_prompt(_PROMPT_NAME)
     temperature = loader.get_temperature(_PROMPT_NAME)
     max_output_tokens = loader.get_max_tokens(_PROMPT_NAME)
+
+    await emit_progress(state["stream_queue"], "Searching the web...")
 
     sub_queries = state["sub_queries"]
 
