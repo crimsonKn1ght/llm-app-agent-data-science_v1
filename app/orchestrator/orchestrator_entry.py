@@ -69,8 +69,8 @@ async def orchestrate(
         logger.error("Graph execution failed: %s", e, exc_info=True)
         error_msg = f"An error occurred while processing your request: {e}"
         try:
-            await stream_queue.put({"type": "error", "message": error_msg})
-            await stream_queue.put(None)
+            stream_queue.put_nowait({"type": "error", "message": error_msg})
+            stream_queue.put_nowait(None)
         except Exception:
             pass
         return error_msg

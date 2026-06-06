@@ -30,8 +30,8 @@ async def generate(request: ChatRequest):
         except Exception as e:
             logger.error("Orchestration failed: %s", e)
             try:
-                await queue.put({"type": "error", "message": str(e)})
-                await queue.put(None)
+                queue.put_nowait({"type": "error", "message": str(e)})
+                queue.put_nowait(None)
             except Exception:
                 pass
 
@@ -39,6 +39,7 @@ async def generate(request: ChatRequest):
 
     async def event_stream() -> AsyncGenerator[bytes, None]:
         accumulated = ""
+        final_response_override = None
         try:
             while True:
                 item = await asyncio.wait_for(queue.get(), timeout=120.0)
@@ -52,12 +53,16 @@ async def generate(request: ChatRequest):
                             "message": item["message"],
                             "is_final": False,
                         })
+                        yield (line + "\n").encode("utf-8")
+                    elif event_type == "final_response":
+                        final_response_override = item["content"]
                     elif event_type == "error":
                         line = json.dumps({
                             "type": "error",
                             "message": item["message"],
                             "is_final": False,
                         })
+                        yield (line + "\n").encode("utf-8")
                     else:
                         text = item.get("text", "")
                         accumulated += text
@@ -66,6 +71,7 @@ async def generate(request: ChatRequest):
                             "text": text,
                             "is_final": False,
                         })
+                        yield (line + "\n").encode("utf-8")
                 else:
                     accumulated += item
                     line = json.dumps({
@@ -73,7 +79,7 @@ async def generate(request: ChatRequest):
                         "text": item,
                         "is_final": False,
                     })
-                yield (line + "\n").encode("utf-8")
+                    yield (line + "\n").encode("utf-8")
         except asyncio.TimeoutError:
             logger.warning("Stream timed out after 120s")
             accumulated += "\n[Stream timed out]"
@@ -84,7 +90,7 @@ async def generate(request: ChatRequest):
             "type": "text",
             "text": "",
             "is_final": True,
-            "full_response": accumulated,
+            "full_response": final_response_override if final_response_override is not None else accumulated,
         })
         yield (final_line + "\n").encode("utf-8")
 
@@ -95,6 +101,7 @@ async def generate(request: ChatRequest):
         media_type="application/x-ndjson",
         headers={
             "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
             "X-Content-Type-Options": "nosniff",
         },
     )
