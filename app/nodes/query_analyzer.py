@@ -13,6 +13,7 @@ MAX_SUB_QUERIES = 3
 INTENT_TO_TOOL = {
     "insights": "insights",
     "analytical": "analytical",
+    "web_search": "web_search",
 }
 
 
@@ -48,7 +49,7 @@ def _parse_llm_output(raw: str) -> Dict[str, Any]:
 
 
 def _normalize_result(parsed: Dict[str, Any], original_query: str) -> Dict[str, Any]:
-    valid_types = {"analytical", "insights", "out_of_scope"}
+    valid_types = {"analytical", "insights", "out_of_scope", "web_search"}
     query_type = parsed.get("query_type", "insights")
     if query_type not in valid_types:
         query_type = "insights"
@@ -66,6 +67,19 @@ def _normalize_result(parsed: Dict[str, Any], original_query: str) -> Dict[str, 
                 "scope": "in_scope",
                 "scope_reasoning": "Analytical queries passed through without decomposition",
                 "tool_hint": "analytical",
+            }],
+        }
+
+    if query_type == "web_search":
+        return {
+            "query_type": "web_search",
+            "is_complex": False,
+            "sub_queries": [{
+                "query": original_query,
+                "intent": "web_search",
+                "scope": "in_scope",
+                "scope_reasoning": "Web search queries passed through without decomposition",
+                "tool_hint": "web_search",
             }],
         }
 
