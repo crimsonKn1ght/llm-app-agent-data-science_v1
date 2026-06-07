@@ -3,12 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import AsyncGenerator
+from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
-from app.models.schemas import ChatRequest
 from app.orchestrator.orchestrator_entry import orchestrate
 
 logger = logging.getLogger(__name__)
@@ -16,103 +16,66 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/api/chat/generate")
-async def generate(request: ChatRequest):
-    queue: asyncio.Queue = asyncio.Queue()
+class ChatRequest(BaseModel):
+    query: str
+    conversation_id: Optional[str] = None
 
-    async def run_graph():
-        try:
-            await orchestrate(
-                user_query=request.user_query,
-                conversation_id=request.conversation_id,
-                stream_queue=queue,
-            )
-        except Exception as e:
-            logger.error("Orchestration failed: %s", e)
-            try:
-                queue.put_nowait({"type": "error", "message": str(e)})
-                queue.put_nowait(None)
-            except Exception:
-                pass
 
-    graph_task = asyncio.create_task(run_graph())
+@router.post("/chat")
+async def chat_endpoint(request: ChatRequest):
+    stream_queue: asyncio.Queue = asyncio.Queue()
 
-    async def event_stream() -> AsyncGenerator[bytes, None]:
-        accumulated = ""
+    async def run_pipeline():
+        await orchestrate(
+            user_query=request.query,
+            conversation_id=request.conversation_id,
+            stream_queue=stream_queue,
+        )
+
+    asyncio.create_task(run_pipeline())
+
+    async def event_generator():
         final_response_override = None
-        try:
-            while True:
-                item = await asyncio.wait_for(queue.get(), timeout=120.0)
-                if item is None:
-                    break
-                if isinstance(item, dict):
-                    event_type = item.get("type", "text")
-                    origin = item.get("origin", "")
 
-                    if event_type == "progress":
-                        payload: dict = {
-                            "type": "progress",
-                            "message": item["message"],
-                            "is_final": False,
-                        }
-                        if origin:
-                            payload["origin"] = origin
-                        yield (json.dumps(payload) + "\n").encode("utf-8")
+        while True:
+            item = await stream_queue.get()
 
-                    elif event_type == "final_response":
-                        final_response_override = item["content"]
+            if item is None:
+                if final_response_override:
+                    payload = {
+                        "type": "final_response",
+                        "content": final_response_override,
+                    }
+                    yield json.dumps(payload) + "\n"
+                break
 
-                    elif event_type == "error":
-                        payload = {
-                            "type": "error",
-                            "message": item["message"],
-                            "is_final": False,
-                        }
-                        yield (json.dumps(payload) + "\n").encode("utf-8")
+            event_type = item.get("type", "")
 
-                    else:
-                        text = item.get("text", "")
-                        accumulated += text
-                        payload = {
-                            "type": "text",
-                            "text": text,
-                            "is_final": False,
-                        }
-                        if origin:
-                            payload["origin"] = origin
-                        yield (json.dumps(payload) + "\n").encode("utf-8")
+            if event_type == "final_response":
+                final_response_override = item.get("content", "")
+                continue
 
-                else:
-                    accumulated += item
-                    line = json.dumps({
-                        "type": "text",
-                        "text": item,
-                        "is_final": False,
-                    })
-                    yield (line + "\n").encode("utf-8")
+            if event_type == "progress":
+                payload = {
+                    "type": "progress",
+                    "message": item.get("message", ""),
+                    "origin": item.get("origin", "system"),
+                }
+                yield json.dumps(payload) + "\n"
 
-        except asyncio.TimeoutError:
-            logger.warning("Stream timed out after 120s")
-            accumulated += "\n[Stream timed out]"
-        except Exception as e:
-            logger.error("Stream error: %s", e)
+            elif event_type == "text":
+                payload = {"type": "text", "text": item.get("text", "")}
+                origin = item.get("origin")
+                if origin:
+                    payload["origin"] = origin
+                yield json.dumps(payload) + "\n"
 
-        final_line = json.dumps({
-            "type": "text",
-            "text": "",
-            "is_final": True,
-            "full_response": final_response_override if final_response_override is not None else accumulated,
-        })
-        yield (final_line + "\n").encode("utf-8")
-
-        await graph_task
+            elif event_type == "error":
+                payload = {"type": "error", "message": item.get("message", "")}
+                yield json.dumps(payload) + "\n"
 
     return StreamingResponse(
-        event_stream(),
+        event_generator(),
         media_type="application/x-ndjson",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "X-Content-Type-Options": "nosniff",
-        },
+        headers={"X-Accel-Buffering": "no"},
     )

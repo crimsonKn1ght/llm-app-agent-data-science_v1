@@ -190,19 +190,18 @@ async def query_analyzer_node(state: GraphState) -> Dict[str, Any]:
             f"Your query was decomposed into {len(in_scope_queries)} parts:\n{parts}",
         )
 
+    # Determine which branches are needed
+    tool_hints = set(sq["tool_hint"] for sq in in_scope_queries)
+    expected_branches = sorted(tool_hints) if tool_hints else []
+
     logger.info(
-        "Query classified | type=%s | is_complex=%s | in_scope=%d | out_of_scope=%d",
-        query_type, is_complex, len(in_scope_queries), len(out_of_scope_results),
+        "Query classified | type=%s | is_complex=%s | in_scope=%d | out_of_scope=%d | branches=%s",
+        query_type, is_complex, len(in_scope_queries), len(out_of_scope_results), expected_branches,
     )
     for sq in in_scope_queries:
         logger.debug(
             "Sub-query %d | tool=%s | query=%r",
             sq["sub_query_id"], sq["tool_hint"], sq["query"],
-        )
-    if out_of_scope_results:
-        logger.info(
-            "Out-of-scope sub-queries: %s",
-            [r["query"] for r in out_of_scope_results],
         )
 
     return {
@@ -211,4 +210,5 @@ async def query_analyzer_node(state: GraphState) -> Dict[str, Any]:
         "is_complex": is_complex,
         "sub_queries": in_scope_queries,
         "agent_results": out_of_scope_results,
+        "expected_branches": expected_branches,
     }

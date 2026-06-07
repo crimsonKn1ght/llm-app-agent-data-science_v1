@@ -22,7 +22,6 @@ async def orchestrate(
     if not conversation_id:
         conversation_id = str(uuid.uuid4())
 
-    # Stamp every log line in this request with the conversation ID
     set_conversation_id(conversation_id)
 
     t_start = time.perf_counter()
@@ -53,6 +52,7 @@ async def orchestrate(
         "is_complex": False,
         "sub_queries": [],
         "agent_results": [],
+        "source_contents": {},
         "final_response": "",
         "stream_queue": stream_queue,
         "runtime": runtime,

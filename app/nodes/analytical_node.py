@@ -4,98 +4,149 @@ import asyncio
 import logging
 from typing import Any, Dict, List
 
-from app.orchestrator.events import emit_progress
-from app.orchestrator.state import AgentResult, GraphState
+from app.orchestrator.events import emit_progress, emit_text
+from app.orchestrator.state import DecomposedQuery, GraphState
 
 logger = logging.getLogger(__name__)
 
-_PROMPT_NAME = "analytical"
+SOURCE_KEY = "analytical"
+HEADER = "## Analysis\n\n"
+NO_RELEVANT_ANSWER = "No relevant answer retrieved based on this query"
 
 
-def _build_prompt_input(
-    query: str,
-    conversation_summary: str,
-    conversation_history: List[Dict[str, str]],
+def _get_my_queries(state: GraphState) -> List[DecomposedQuery]:
+    return [sq for sq in state["sub_queries"] if sq["tool_hint"] == SOURCE_KEY]
+
+
+def _build_user_input(
+    query: str, summary: str, history: List[Dict[str, str]],
 ) -> str:
     parts = [f"Question: {query}"]
-
-    if conversation_summary:
-        parts.append(f"\nConversation summary:\n{conversation_summary}")
-
-    if conversation_history:
-        recent = conversation_history[-12:]
-        lines = []
-        for msg in recent:
-            role = msg.get("role", "user").upper()
-            lines.append(f"{role}: {msg.get('content', '')}")
+    if summary:
+        parts.append(f"\nConversation summary:\n{summary}")
+    if history:
+        recent = history[-12:]
+        lines = [f"{m.get('role', 'user').upper()}: {m.get('content', '')}" for m in recent]
         parts.append("\nRecent conversation:\n" + "\n".join(lines))
-
     return "\n".join(parts)
 
 
-async def _process_sub_query(
-    sub_query: Dict[str, Any],
-    system_prompt: str,
-    temperature: float,
-    max_output_tokens: int,
-    conversation_summary: str,
-    conversation_history: List[Dict[str, str]],
-    llm_client: Any,
-) -> AgentResult:
-    query = sub_query["query"]
-    sub_id = sub_query["sub_query_id"]
+async def _stream_single(state: GraphState, query: str) -> str:
+    runtime = state["runtime"]
+    queue = state["stream_queue"]
+    loader = runtime.prompt_loader
 
-    user_input = _build_prompt_input(query, conversation_summary, conversation_history)
+    user_input = _build_user_input(
+        query,
+        state.get("conversation_summary", ""),
+        state.get("conversation_history", []),
+    )
 
-    try:
-        answer = await llm_client.generate(
-            user_input=user_input,
-            system_prompt=system_prompt,
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,
-        )
-        return {
-            "sub_query_id": sub_id,
-            "query": query,
-            "agent_type": "analytical",
-            "result": answer,
-            "status": "success",
-        }
-    except Exception as e:
-        logger.error("Analytical node failed for sub_query %d: %s", sub_id, e)
-        return {
-            "sub_query_id": sub_id,
-            "query": query,
-            "agent_type": "analytical",
-            "result": f"Failed to generate an answer: {e}",
-            "status": "error",
-        }
+    collected: List[str] = []
+    async for chunk in runtime.llm_client.stream(
+        user_input=user_input,
+        system_prompt=loader.get_system_prompt("analytical"),
+        temperature=loader.get_temperature("analytical"),
+        max_output_tokens=loader.get_max_tokens("analytical"),
+    ):
+        collected.append(chunk)
+        await emit_text(queue, chunk, origin=SOURCE_KEY)
+
+    return "".join(collected)
+
+
+async def _generate_one(state: GraphState, query: str) -> str:
+    runtime = state["runtime"]
+    loader = runtime.prompt_loader
+
+    user_input = _build_user_input(
+        query,
+        state.get("conversation_summary", ""),
+        state.get("conversation_history", []),
+    )
+
+    return await runtime.llm_client.generate(
+        user_input=user_input,
+        system_prompt=loader.get_system_prompt("analytical"),
+        temperature=loader.get_temperature("analytical"),
+        max_output_tokens=loader.get_max_tokens("analytical"),
+    )
+
+
+async def _compile_and_stream(state: GraphState, sub_answers: List[str]) -> str:
+    runtime = state["runtime"]
+    queue = state["stream_queue"]
+    loader = runtime.prompt_loader
+
+    combined_input = "\n\n---\n\n".join(
+        f"Sub-answer {i+1}:\n{ans}" for i, ans in enumerate(sub_answers)
+    )
+    user_input = f"Original question: {state['user_query']}\n\nSub-answers:\n{combined_input}"
+
+    collected: List[str] = []
+    async for chunk in runtime.llm_client.stream(
+        user_input=user_input,
+        system_prompt=loader.get_system_prompt("source_synthesis"),
+        temperature=loader.get_temperature("source_synthesis"),
+        max_output_tokens=loader.get_max_tokens("source_synthesis"),
+    ):
+        collected.append(chunk)
+        await emit_text(queue, chunk, origin=SOURCE_KEY)
+
+    return "".join(collected)
 
 
 async def analytical_node(state: GraphState) -> Dict[str, Any]:
-    runtime = state["runtime"]
-    loader = runtime.prompt_loader
-    system_prompt = loader.get_system_prompt(_PROMPT_NAME)
-    temperature = loader.get_temperature(_PROMPT_NAME)
-    max_output_tokens = loader.get_max_tokens(_PROMPT_NAME)
+    my_queries = _get_my_queries(state)
 
-    await emit_progress(state["stream_queue"], "Running analytical reasoning...")
+    if not my_queries:
+        logger.debug("Analytical node: no queries to process, skipping")
+        return {
+            "execution_path": ["analytical"],
+            "completed_branches": ["analytical"],
+            "agent_results": [],
+            "source_contents": {},
+        }
 
-    sub_queries = state["sub_queries"]
-    summary = state.get("conversation_summary", "")
-    history = state.get("conversation_history", [])
+    queue = state["stream_queue"]
+    await emit_progress(queue, "Running analytical reasoning...", origin=SOURCE_KEY)
+    await emit_text(queue, HEADER, origin=SOURCE_KEY)
 
-    tasks = [
-        _process_sub_query(
-            sq, system_prompt, temperature, max_output_tokens,
-            summary, history, runtime.llm_client,
-        )
-        for sq in sub_queries
+    if len(my_queries) == 1:
+        result_text = await _stream_single(state, my_queries[0]["query"])
+    else:
+        logger.info("Analytical node: processing %d sub-queries", len(my_queries))
+        tasks = [_generate_one(state, sq["query"]) for sq in my_queries]
+        sub_answers = await asyncio.gather(*tasks)
+        sub_answers = [a for a in sub_answers if a and a.strip()]
+
+        if not sub_answers:
+            result_text = NO_RELEVANT_ANSWER
+            await emit_text(queue, result_text, origin=SOURCE_KEY)
+        else:
+            result_text = await _compile_and_stream(state, sub_answers)
+
+    await emit_text(queue, "\n\n", origin=SOURCE_KEY)
+
+    if not result_text or not result_text.strip():
+        result_text = NO_RELEVANT_ANSWER
+
+    logger.info("Analytical node completed | result_chars=%d", len(result_text))
+
+    agent_results = [
+        {
+            "sub_query_id": sq["sub_query_id"],
+            "query": sq["query"],
+            "agent_type": SOURCE_KEY,
+            "result": result_text,
+            "status": "success",
+        }
+        for sq in my_queries
     ]
-    results: List[AgentResult] = await asyncio.gather(*tasks)
 
     return {
         "execution_path": ["analytical"],
-        "completed_branches": ["internal"],
-        "agent_results": list(results),
+        "completed_branches": ["analytical"],
+        "agent_results": agent_results,
+        "source_contents": {SOURCE_KEY: result_text},
     }
