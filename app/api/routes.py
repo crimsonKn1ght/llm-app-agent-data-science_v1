@@ -5,7 +5,7 @@ import json
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -17,17 +17,17 @@ router = APIRouter()
 
 
 class ChatRequest(BaseModel):
-    query: str
+    user_query: str
     conversation_id: Optional[str] = None
 
 
-@router.post("/chat")
+@router.post("/chat/generate")
 async def chat_endpoint(request: ChatRequest):
     stream_queue: asyncio.Queue = asyncio.Queue()
 
     async def run_pipeline():
         await orchestrate(
-            user_query=request.query,
+            user_query=request.user_query,
             conversation_id=request.conversation_id,
             stream_queue=stream_queue,
         )

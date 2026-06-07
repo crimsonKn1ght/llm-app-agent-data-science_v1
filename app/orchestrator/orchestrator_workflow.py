@@ -33,15 +33,6 @@ def route_after_analysis(state: GraphState) -> str:
     return "parallel"
 
 
-def branch_router(state: GraphState) -> str:
-    expected = set(state.get("expected_branches", []))
-    completed = set(state.get("completed_branches", []))
-
-    if not expected or expected.issubset(completed):
-        return "summary"
-    return "__end__"
-
-
 def build_orchestrator_graph():
     graph = StateGraph(GraphState)
 
@@ -64,22 +55,17 @@ def build_orchestrator_graph():
         "summary": "summary",
     })
 
+    # Parallel fan-out: all three run concurrently
     graph.add_edge("parallel_start", "insights")
     graph.add_edge("parallel_start", "analytical")
     graph.add_edge("parallel_start", "web_search")
 
-    graph.add_conditional_edges("insights", branch_router, {
-        "summary": "summary",
-        "__end__": END,
-    })
-    graph.add_conditional_edges("analytical", branch_router, {
-        "summary": "summary",
-        "__end__": END,
-    })
-    graph.add_conditional_edges("web_search", branch_router, {
-        "summary": "summary",
-        "__end__": END,
-    })
+    # All agent nodes converge on summary.
+    # For single-type: only one agent runs, goes to summary.
+    # For parallel: LangGraph waits for all three before running summary.
+    graph.add_edge("insights", "summary")
+    graph.add_edge("analytical", "summary")
+    graph.add_edge("web_search", "summary")
 
     graph.add_edge("summary", END)
 
