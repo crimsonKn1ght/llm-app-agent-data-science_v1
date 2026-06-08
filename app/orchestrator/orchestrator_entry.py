@@ -21,6 +21,12 @@ async def orchestrate(
 ) -> str:
     if not conversation_id:
         conversation_id = str(uuid.uuid4())
+    else:
+        try:
+            conversation_id = conversation_store.normalize_conversation_id(conversation_id)
+        except ValueError:
+            logger.warning("Invalid conversation_id supplied; starting a new conversation")
+            conversation_id = str(uuid.uuid4())
 
     set_conversation_id(conversation_id)
 

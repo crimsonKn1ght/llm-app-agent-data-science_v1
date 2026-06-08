@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List
+from urllib.parse import urlparse, urlunparse
 
-from app.orchestrator.state import AgentResult
+from app.orchestrator.state import AgentResult, Citation
 
 SUMMARY_CHAR_THRESHOLD = 1200
+MAX_RENDERED_CITATIONS = 5
 
 SOURCE_HEADERS = {
     "insights": "## Insights",
@@ -37,6 +39,7 @@ class CompilationPlan:
     final_response: str
     summary_input: str
     error_notice: str
+    citations: List[Citation]
     metadata: Dict[str, Any]
 
 
@@ -113,6 +116,7 @@ def build_compiler_metadata(
     categorized: Dict[str, List[AgentResult]],
     *,
     citation_count: int,
+    rendered_citation_count: int,
     strategy: str,
     rendered_section_count: int,
 ) -> Dict[str, Any]:
@@ -130,6 +134,7 @@ def build_compiler_metadata(
             for result in categorized["out_of_scope"]
         ],
         "citation_count": citation_count,
+        "rendered_citation_count": rendered_citation_count,
         "summary_strategy": strategy,
         "rendered_section_count": rendered_section_count,
     }
@@ -137,6 +142,65 @@ def build_compiler_metadata(
 
 def count_citations(agent_results: List[AgentResult]) -> int:
     return sum(len(result.get("citations", [])) for result in agent_results)
+
+
+def _normalize_url(url: str) -> str:
+    parsed = urlparse(url.strip())
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc.lower()
+    path = parsed.path.rstrip("/")
+    return urlunparse((scheme, netloc, path, "", parsed.query, ""))
+
+
+def collect_web_citations(agent_results: List[AgentResult]) -> List[Citation]:
+    citations: List[Citation] = []
+    seen_urls: set[str] = set()
+
+    for result in agent_results:
+        if result.get("status") != "success":
+            continue
+        if result.get("agent_type") != "web_search" and result.get("source") != "web_search":
+            continue
+
+        for citation in result.get("citations", []):
+            url = str(citation.get("url", "")).strip()
+            if not url:
+                continue
+
+            normalized = _normalize_url(url)
+            if normalized in seen_urls:
+                continue
+            seen_urls.add(normalized)
+            citations.append(citation)
+
+    return citations
+
+
+def render_citation_section(citations: List[Citation]) -> str:
+    if not citations:
+        return ""
+
+    lines = ["## Sources"]
+    for idx, citation in enumerate(citations[:MAX_RENDERED_CITATIONS], start=1):
+        title = str(citation.get("title") or citation.get("url") or "Source").strip()
+        url = str(citation.get("url") or "").strip()
+        snippet = str(citation.get("snippet") or "").strip()
+        if not url:
+            continue
+
+        line = f"{idx}. [{title}]({url})"
+        if snippet:
+            line += f" - {snippet}"
+        lines.append(line)
+
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
+def append_citations(final_response: str, citations: List[Citation]) -> str:
+    citation_section = render_citation_section(citations)
+    if not citation_section:
+        return final_response
+    return "\n\n".join(part for part in (final_response, citation_section) if part and part.strip())
 
 
 def plan_compilation(
@@ -149,6 +213,9 @@ def plan_compilation(
     categorized = categorize_results(agent_results)
     sections = build_source_sections(source_contents)
     citation_count = count_citations(agent_results)
+    has_web_section = any(section.key == "web_search" for section in sections)
+    citations = collect_web_citations(agent_results) if has_web_section else []
+    rendered_citation_count = min(len(citations), MAX_RENDERED_CITATIONS)
 
     if not sections and categorized["out_of_scope"]:
         final_response = categorized["out_of_scope"][0].get("result", OUT_OF_SCOPE_FALLBACK)
@@ -156,6 +223,7 @@ def plan_compilation(
         metadata = build_compiler_metadata(
             categorized,
             citation_count=citation_count,
+            rendered_citation_count=0,
             strategy=strategy,
             rendered_section_count=0,
         )
@@ -165,6 +233,7 @@ def plan_compilation(
             final_response=final_response,
             summary_input="",
             error_notice="",
+            citations=[],
             metadata=metadata,
         )
 
@@ -173,6 +242,7 @@ def plan_compilation(
         metadata = build_compiler_metadata(
             categorized,
             citation_count=citation_count,
+            rendered_citation_count=0,
             strategy=strategy,
             rendered_section_count=0,
         )
@@ -182,6 +252,7 @@ def plan_compilation(
             final_response=ERROR_ONLY_RESPONSE,
             summary_input="",
             error_notice="",
+            citations=[],
             metadata=metadata,
         )
 
@@ -194,10 +265,12 @@ def plan_compilation(
     final_response = section_text
     if error_notice:
         final_response = "\n\n".join(part for part in (final_response, error_notice) if part)
+    final_response = append_citations(final_response, citations)
 
     metadata = build_compiler_metadata(
         categorized,
         citation_count=citation_count,
+        rendered_citation_count=rendered_citation_count,
         strategy=strategy,
         rendered_section_count=len(sections),
     )
@@ -208,6 +281,7 @@ def plan_compilation(
         final_response=final_response,
         summary_input=build_summary_input(user_query, sections) if should_summarize else "",
         error_notice=error_notice,
+        citations=citations,
         metadata=metadata,
     )
 
@@ -217,8 +291,10 @@ def assemble_with_summary(
     summary_text: str,
     sections: List[CompiledSection],
     error_notice: str = "",
+    citations: List[Citation] | None = None,
 ) -> str:
     parts = ["## Summary\n\n" + summary_text.strip(), render_sections(sections)]
     if error_notice:
         parts.append(error_notice)
-    return "\n\n".join(part for part in parts if part and part.strip())
+    response = "\n\n".join(part for part in parts if part and part.strip())
+    return append_citations(response, citations or [])

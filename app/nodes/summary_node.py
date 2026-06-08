@@ -68,6 +68,7 @@ async def summary_node(state: GraphState) -> Dict[str, Any]:
         summary_text=summary_text,
         sections=compilation.sections,
         error_notice=compilation.error_notice,
+        citations=compilation.citations,
     )
 
     await emit_final_response(queue, final_response)
