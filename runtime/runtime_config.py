@@ -18,6 +18,25 @@ class Runtime:
 _runtime: Runtime | None = None
 
 
+def runtime_status() -> dict[str, Any]:
+    missing: list[str] = []
+
+    if _runtime is None:
+        missing.append("runtime")
+    else:
+        if _runtime.llm_client is None:
+            missing.append("llm_client")
+        if _runtime.prompt_loader is None:
+            missing.append("prompt_loader")
+        if _runtime.compiled_graph is None:
+            missing.append("compiled_graph")
+
+    return {
+        "ready": not missing,
+        "missing": missing,
+    }
+
+
 def init_runtime() -> Runtime:
     global _runtime
 
