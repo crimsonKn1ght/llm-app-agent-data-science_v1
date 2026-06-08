@@ -12,6 +12,7 @@ from typing import Any, Dict, List
 from duckduckgo_search import DDGS
 
 from app.orchestrator.events import emit_progress, emit_text
+from app.orchestrator.results import make_success_result, normalize_citations
 from app.orchestrator.state import DecomposedQuery, GraphState
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,7 @@ def _brave_search(query: str) -> List[Dict[str, str]]:
                 "title": item.get("title", ""),
                 "href": item.get("url", ""),
                 "body": item.get("description", ""),
+                "provider": "brave",
             }
             for item in items
         ]
@@ -82,7 +84,7 @@ def _brave_search(query: str) -> List[Dict[str, str]]:
 async def _search(query: str) -> List[Dict[str, str]]:
     results = await asyncio.to_thread(_ddgs_text, query)
     if results:
-        return results
+        return [{**r, "provider": r.get("provider", "duckduckgo")} for r in results]
 
     if os.getenv("BRAVE_SEARCH_API_KEY"):
         logger.info("DDGS returned no results, trying Brave Search fallback")
@@ -143,6 +145,7 @@ async def _generate_web_answer(state: GraphState, search_context: str, query: st
 
 
 async def web_search_node(state: GraphState) -> Dict[str, Any]:
+    started = time.perf_counter()
     my_queries = _get_my_queries(state)
 
     if not my_queries:
@@ -158,9 +161,13 @@ async def web_search_node(state: GraphState) -> Dict[str, Any]:
     await emit_progress(queue, "Searching the web...", origin=SOURCE_KEY)
     await emit_text(queue, HEADER, origin=SOURCE_KEY)
 
+    all_search_results: List[Dict[str, str]] = []
+    synthesis_used = len(my_queries) > 1
+
     if len(my_queries) == 1:
         query = my_queries[0]["query"]
         search_results = await _search(query)
+        all_search_results.extend(search_results)
         search_context = _format_results_for_llm(search_results)
         logger.info("Web search completed | results=%d | query=%r", len(search_results), query[:60])
         result_text = await _stream_web_answer(state, search_context, query)
@@ -169,6 +176,7 @@ async def web_search_node(state: GraphState) -> Dict[str, Any]:
         sub_answers: List[str] = []
         for sq in my_queries:
             search_results = await _search(sq["query"])
+            all_search_results.extend(search_results)
             search_context = _format_results_for_llm(search_results)
             answer = await _generate_web_answer(state, search_context, sq["query"])
             if answer and answer.strip():
@@ -203,14 +211,26 @@ async def web_search_node(state: GraphState) -> Dict[str, Any]:
 
     logger.info("Web search node completed | result_chars=%d", len(result_text))
 
+    citations = normalize_citations(all_search_results, default_provider="web_search")
+    latency_ms = int((time.perf_counter() - started) * 1000)
     agent_results = [
-        {
-            "sub_query_id": sq["sub_query_id"],
-            "query": sq["query"],
-            "agent_type": SOURCE_KEY,
-            "result": result_text,
-            "status": "success",
-        }
+        make_success_result(
+            sub_query_id=sq["sub_query_id"],
+            query=sq["query"],
+            agent_type=SOURCE_KEY,
+            result=result_text,
+            source=SOURCE_KEY,
+            latency_ms=latency_ms,
+            citations=citations,
+            confidence="unknown",
+            tool_metadata={
+                "intent": sq["intent"],
+                "prompt_name": "source_synthesis" if synthesis_used else "web_search",
+                "sub_query_count": len(my_queries),
+                "synthesis_used": synthesis_used,
+                "search_result_count": len(all_search_results),
+            },
+        )
         for sq in my_queries
     ]
 

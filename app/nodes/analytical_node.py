@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Dict, List
 
 from app.orchestrator.events import emit_progress, emit_text
+from app.orchestrator.results import make_success_result
 from app.orchestrator.state import DecomposedQuery, GraphState
 
 logger = logging.getLogger(__name__)
@@ -97,6 +99,7 @@ async def _compile_and_stream(state: GraphState, sub_answers: List[str]) -> str:
 
 
 async def analytical_node(state: GraphState) -> Dict[str, Any]:
+    started = time.perf_counter()
     my_queries = _get_my_queries(state)
 
     if not my_queries:
@@ -111,6 +114,8 @@ async def analytical_node(state: GraphState) -> Dict[str, Any]:
     queue = state["stream_queue"]
     await emit_progress(queue, "Running analytical reasoning...", origin=SOURCE_KEY)
     await emit_text(queue, HEADER, origin=SOURCE_KEY)
+
+    synthesis_used = len(my_queries) > 1
 
     if len(my_queries) == 1:
         result_text = await _stream_single(state, my_queries[0]["query"])
@@ -133,14 +138,23 @@ async def analytical_node(state: GraphState) -> Dict[str, Any]:
 
     logger.info("Analytical node completed | result_chars=%d", len(result_text))
 
+    latency_ms = int((time.perf_counter() - started) * 1000)
     agent_results = [
-        {
-            "sub_query_id": sq["sub_query_id"],
-            "query": sq["query"],
-            "agent_type": SOURCE_KEY,
-            "result": result_text,
-            "status": "success",
-        }
+        make_success_result(
+            sub_query_id=sq["sub_query_id"],
+            query=sq["query"],
+            agent_type=SOURCE_KEY,
+            result=result_text,
+            source=SOURCE_KEY,
+            latency_ms=latency_ms,
+            confidence="unknown",
+            tool_metadata={
+                "intent": sq["intent"],
+                "prompt_name": "source_synthesis" if synthesis_used else "analytical",
+                "sub_query_count": len(my_queries),
+                "synthesis_used": synthesis_used,
+            },
+        )
         for sq in my_queries
     ]
 

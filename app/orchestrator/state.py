@@ -14,12 +14,31 @@ class DecomposedQuery(TypedDict):
     tool_hint: str
 
 
-class AgentResult(TypedDict):
+class Citation(TypedDict, total=False):
+    title: str
+    url: str
+    snippet: str
+    rank: int
+    provider: str
+
+
+class AgentResultRequired(TypedDict):
     sub_query_id: int
     query: str
     agent_type: str
     result: str
     status: Literal["success", "error", "out_of_scope"]
+
+
+class AgentResult(AgentResultRequired, total=False):
+    error_message: str
+    latency_ms: int
+    output_chars: int
+    source: str
+    data_sources: List[str]
+    citations: List[Citation]
+    confidence: Literal["high", "medium", "low", "unknown"]
+    tool_metadata: Dict[str, Any]
 
 
 class ErrorInfo(TypedDict, total=False):
@@ -39,6 +58,7 @@ class GraphState(TypedDict):
     agent_results: Annotated[List[AgentResult], operator.add]
     source_contents: Annotated[Dict[str, str], lambda a, b: {**a, **b}]
     final_response: str
+    compiler_metadata: Dict[str, Any]
     stream_queue: asyncio.Queue
     runtime: Any
     execution_path: Annotated[List[str], operator.add]

@@ -54,6 +54,7 @@ async def orchestrate(
         "agent_results": [],
         "source_contents": {},
         "final_response": "",
+        "compiler_metadata": {},
         "stream_queue": stream_queue,
         "runtime": runtime,
         "execution_path": [],

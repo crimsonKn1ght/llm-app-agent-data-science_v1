@@ -5,6 +5,7 @@ import logging
 from typing import Any, Dict, List
 
 from app.orchestrator.events import emit_progress
+from app.orchestrator.results import make_out_of_scope_result
 from app.orchestrator.state import AgentResult, DecomposedQuery, GraphState
 
 logger = logging.getLogger(__name__)
@@ -164,13 +165,18 @@ async def query_analyzer_node(state: GraphState) -> Dict[str, Any]:
 
     for idx, sq in enumerate(sub_queries_raw, start=1):
         if sq["scope"] == "out_of_scope":
-            out_of_scope_results.append({
-                "sub_query_id": idx,
-                "query": sq["query"],
-                "agent_type": "out_of_scope",
-                "result": "This question is outside the scope of what I can help with.",
-                "status": "out_of_scope",
-            })
+            out_of_scope_results.append(make_out_of_scope_result(
+                sub_query_id=idx,
+                query=sq["query"],
+                result="This question is outside the scope of what I can help with.",
+                source="query_analyzer",
+                scope_reasoning=sq.get("scope_reasoning", ""),
+                tool_metadata={
+                    "query_type": query_type,
+                    "intent": sq.get("intent", ""),
+                    "tool_hint": sq.get("tool_hint", ""),
+                },
+            ))
         else:
             in_scope_queries.append({
                 "sub_query_id": idx,
