@@ -10,11 +10,28 @@ from app.nodes.query_analyzer import query_analyzer_node
 from app.nodes.router_node import router_node
 from app.nodes.summary_node import summary_node
 from app.nodes.web_search_node import web_search_node
+from app.orchestrator.node_wrapper import with_node_error_handling
 from app.orchestrator.state import GraphState
 
 
 async def parallel_start_node(state: GraphState) -> Dict[str, Any]:
     return {"execution_path": ["parallel_start"]}
+
+
+async def parallel_insights_web_node(state: GraphState) -> Dict[str, Any]:
+    return {"execution_path": ["parallel_insights_web"]}
+
+
+async def parallel_analytical_web_node(state: GraphState) -> Dict[str, Any]:
+    return {"execution_path": ["parallel_analytical_web"]}
+
+
+async def parallel_insights_analytical_node(state: GraphState) -> Dict[str, Any]:
+    return {"execution_path": ["parallel_insights_analytical"]}
+
+
+async def parallel_all_node(state: GraphState) -> Dict[str, Any]:
+    return {"execution_path": ["parallel_all"]}
 
 
 def route_after_analysis(state: GraphState) -> str:
@@ -30,7 +47,14 @@ def route_after_analysis(state: GraphState) -> str:
             return hint
         return "insights"
 
-    return "parallel"
+    if tool_hints == {"insights", "web_search"}:
+        return "insights_web"
+    if tool_hints == {"analytical", "web_search"}:
+        return "analytical_web"
+    if tool_hints == {"insights", "analytical"}:
+        return "insights_analytical"
+
+    return "all"
 
 
 def build_orchestrator_graph():
@@ -39,9 +63,34 @@ def build_orchestrator_graph():
     graph.add_node("router_node", router_node)
     graph.add_node("query_analyzer", query_analyzer_node)
     graph.add_node("parallel_start", parallel_start_node)
-    graph.add_node("insights", insights_node)
-    graph.add_node("analytical", analytical_node)
-    graph.add_node("web_search", web_search_node)
+    graph.add_node("parallel_insights_web", parallel_insights_web_node)
+    graph.add_node("parallel_analytical_web", parallel_analytical_web_node)
+    graph.add_node("parallel_insights_analytical", parallel_insights_analytical_node)
+    graph.add_node("parallel_all", parallel_all_node)
+    graph.add_node(
+        "insights",
+        with_node_error_handling(
+            insights_node,
+            node_name="insights",
+            branch_name="insights",
+        ),
+    )
+    graph.add_node(
+        "analytical",
+        with_node_error_handling(
+            analytical_node,
+            node_name="analytical",
+            branch_name="analytical",
+        ),
+    )
+    graph.add_node(
+        "web_search",
+        with_node_error_handling(
+            web_search_node,
+            node_name="web_search",
+            branch_name="web_search",
+        ),
+    )
     graph.add_node("summary", summary_node)
 
     graph.set_entry_point("router_node")
@@ -52,13 +101,30 @@ def build_orchestrator_graph():
         "analytical": "analytical",
         "web_search": "web_search",
         "parallel": "parallel_start",
+        "insights_web": "parallel_insights_web",
+        "analytical_web": "parallel_analytical_web",
+        "insights_analytical": "parallel_insights_analytical",
+        "all": "parallel_all",
         "summary": "summary",
     })
 
-    # Parallel fan-out: all three run concurrently
+    # Fallback fan-out: all three run concurrently
     graph.add_edge("parallel_start", "insights")
     graph.add_edge("parallel_start", "analytical")
     graph.add_edge("parallel_start", "web_search")
+
+    graph.add_edge("parallel_insights_web", "insights")
+    graph.add_edge("parallel_insights_web", "web_search")
+
+    graph.add_edge("parallel_analytical_web", "analytical")
+    graph.add_edge("parallel_analytical_web", "web_search")
+
+    graph.add_edge("parallel_insights_analytical", "insights")
+    graph.add_edge("parallel_insights_analytical", "analytical")
+
+    graph.add_edge("parallel_all", "insights")
+    graph.add_edge("parallel_all", "analytical")
+    graph.add_edge("parallel_all", "web_search")
 
     # All agent nodes converge on summary.
     # For single-type: only one agent runs, goes to summary.

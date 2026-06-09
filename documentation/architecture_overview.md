@@ -49,14 +49,14 @@ flowchart LR
 
 ## Request Lifecycle
 
-1. A client sends `POST /api/chat/generate` with `user_query` and optional `conversation_id`.
+1. A client sends `POST /api/chat/generate` with `user_query`, optional `conversation_id`, and optional `web_search`.
 2. The route creates an `asyncio.Queue` for stream events.
 3. The route starts `orchestrate()` in a background task.
 4. The route immediately returns a `StreamingResponse` that yields queue events as NDJSON.
 5. The orchestrator creates a conversation ID if one was not supplied.
 6. The orchestrator loads the runtime and any existing conversation memory.
 7. The orchestrator builds the initial `GraphState`.
-8. The compiled LangGraph runs the request through router, analyzer, one or more answer nodes, and summary.
+8. The compiled LangGraph runs the request through router, analyzer, one or more answer nodes, and summary. Web search is added only when `web_search=true`.
 9. Nodes emit `progress` and `text` events while they work.
 10. `summary_node` emits a `final_response` event and closes the stream.
 11. The orchestrator persists the user query and final response.
@@ -89,15 +89,15 @@ flowchart TD
 
     Q -- "tool_hint = insights" --> R["insights_node"]
     Q -- "tool_hint = analytical" --> S["analytical_node"]
-    Q -- "tool_hint = web_search" --> T["web_search_node"]
-    Q -- "multiple tool_hints" --> U["parallel_start"]
-    Q -- "only out-of-scope" --> V["summary_node"]
+    Q -- "web_search=true + insights" --> U1["parallel_insights_web"]
+    Q -- "web_search=true + analytical" --> U2["parallel_analytical_web"]
 
-    U --> R
-    U --> S
-    U --> T
+    U1 --> R
+    U1 --> T["web_search_node"]
+    U2 --> S
+    U2 --> T
 
-    R --> V
+    R --> V["summary_node"]
     S --> V
     T --> V
 
@@ -123,13 +123,13 @@ flowchart TD
 
     Decision -- "insights" --> Insights["insights"]
     Decision -- "analytical" --> Analytical["analytical"]
-    Decision -- "web_search" --> Web["web_search"]
-    Decision -- "parallel" --> Parallel["parallel_start"]
-    Decision -- "summary" --> Summary["summary"]
+    Decision -- "web_search=true + insights" --> ParallelIW["parallel_insights_web"]
+    Decision -- "web_search=true + analytical" --> ParallelAW["parallel_analytical_web"]
 
-    Parallel --> Insights
-    Parallel --> Analytical
-    Parallel --> Web
+    ParallelIW --> Insights
+    ParallelIW --> Web["web_search"]
+    ParallelAW --> Analytical
+    ParallelAW --> Web
 
     Insights --> Summary
     Analytical --> Summary
@@ -142,7 +142,7 @@ flowchart TD
 
 `query_analyzer_node` asks the LLM to return structured JSON with:
 
-- `query_type`: `insights`, `analytical`, `web_search`, or `out_of_scope`
+- `query_type`: `insights` or `analytical`
 - `is_complex`: whether the query has multiple parts
 - `sub_queries`: up to 3 normalized sub-queries
 - `tool_hint`: the node that should handle each sub-query
@@ -151,13 +151,14 @@ flowchart TD
 
 | Condition | Route |
 | --- | --- |
-| No in-scope sub-queries | `summary` |
 | All sub-queries use `insights` | `insights` |
 | All sub-queries use `analytical` | `analytical` |
-| All sub-queries use `web_search` | `web_search` |
-| Mixed tool hints | `parallel_start`, then all three answer nodes run |
+| `web_search=true` with insights | `parallel_insights_web`, then `insights` plus `web_search` run |
+| `web_search=true` with analytical | `parallel_analytical_web`, then `analytical` plus `web_search` run |
+| Mixed internal tool hints | `parallel_insights_analytical`, then `insights` plus `analytical` run |
+| All three tool hints | `parallel_all`, then all agent nodes run |
 
-In the parallel route, each answer node filters `state["sub_queries"]` for its own `tool_hint`. Nodes with no matching sub-queries return empty results and complete quickly.
+Web search is request-owned, not analyzer-owned. The analyzer never intentionally emits `web_search`; when the API request sets `web_search=true`, the analyzer node appends a synthetic web sub-query using the original user query. Parallel routes target only the required workflow nodes.
 
 ## GraphState
 
@@ -169,6 +170,7 @@ Important fields:
 | --- | --- |
 | `user_query` | Original user request |
 | `conversation_id` | Current conversation identifier |
+| `web_search` | Request flag that controls whether the web search node is included |
 | `conversation_history` | Recent message history |
 | `conversation_summary` | Compressed older history |
 | `query_type` | LLM-classified query category |
@@ -196,9 +198,9 @@ Starts the graph, emits a `"Started pipeline"` progress event, and records execu
 
 ### `query_analyzer_node`
 
-Builds a prompt using the current query plus conversation summary/history. It calls the LLM with the `query_analyzer` prompt, parses JSON output, normalizes the result, filters out-of-scope sub-queries, and sets `expected_branches`.
+Builds a prompt using the current query plus conversation summary/history. It calls the LLM with the `query_analyzer` prompt, parses JSON output, normalizes the result to `insights` or `analytical`, appends a synthetic web sub-query when `web_search=true`, and sets `expected_branches`.
 
-If analyzer parsing or generation fails, it falls back to a single in-scope `insights` sub-query.
+If analyzer parsing or generation fails, it falls back to a single internal sub-query: `analytical` for quantitative patterns, otherwise `insights`.
 
 ### `insights_node`
 
@@ -206,11 +208,11 @@ Handles qualitative or explanatory questions. It streams a `## Insights` section
 
 ### `analytical_node`
 
-Handles quantitative or structured reasoning questions. Its mechanics mirror `insights_node`, but it uses the `analytical` prompt and streams a `## Analysis` section.
+Handles quantitative or structured reasoning questions with LLM-based analytical reasoning. It does not execute database-backed analytics or code; its mechanics mirror `insights_node`, but it uses the `analytical` prompt and streams a `## Analysis` section.
 
 ### `web_search_node`
 
-Handles current or web-dependent questions. It searches with DuckDuckGo first, optionally falls back to Brave Search if `BRAVE_SEARCH_API_KEY` is configured, formats results for the LLM, and streams a `## Web Search` answer.
+Runs only when the request sets `web_search=true`. It searches with DuckDuckGo first, optionally falls back to Brave Search if `BRAVE_SEARCH_API_KEY` is configured, formats results for the LLM, and streams a `## Web Search` answer.
 
 ### `summary_node`
 
@@ -310,16 +312,21 @@ At the end of a successful request, the new user/assistant turn is appended. If 
 | --- | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | Yes | None | Anthropic API key used by `LLMClient` |
 | `CLAUDE_MODEL` | No | `claude-haiku-4-5-20251001` | Model name |
+| `LLM_TIMEOUT_SECONDS` | No | `60` | Timeout for each LLM call attempt |
+| `LLM_MAX_RETRIES` | No | `2` | Retry count after LLM call failures before surfacing an error |
 | `CONVERSATIONS_DIR` | No | `conversations` | Conversation JSON storage directory |
 | `MAX_HISTORY_TURNS` | No | `20` | Compress once history exceeds this many messages |
 | `KEEP_RECENT_TURNS` | No | `10` | Recent messages retained after compression |
 | `BRAVE_SEARCH_API_KEY` | No | Empty | Optional fallback for web search |
+| `WEB_SEARCH_TIMEOUT_SECONDS` | No | `15` | Timeout for each web search provider attempt |
+| `WEB_SEARCH_MAX_RETRIES` | No | `1` | Retry count after web search timeouts/failures |
 
 ## Important Implementation Notes
 
 - The route streams results while the graph is still running; clients should process NDJSON incrementally.
-- The graph always goes through `query_analyzer_node`; routing is based on the analyzer output.
-- Mixed requests fan out to all three answer nodes, but each node processes only matching sub-queries.
+- The graph always goes through `query_analyzer_node`; internal routing is based on analyzer output.
+- Web search is controlled only by the `web_search` request field.
+- Mixed requests fan out only to the required answer nodes.
 - `summary_node` is the final convergence point for both single-node and parallel paths.
 - Conversation saving happens in `finally`, but only if a final response was produced.
 - Web search uses network-backed providers and can return limited results if those providers fail.

@@ -8,7 +8,8 @@ An async FastAPI chatbot that routes each user request through a LangGraph workf
 
 - Exposes a streaming chat endpoint at `POST /api/chat/generate`.
 - Uses an Anthropic-backed LLM client for classification, answering, synthesis, and memory compression.
-- Classifies queries as `insights`, `analytical`, `web_search`, or `out_of_scope`.
+- Classifies internal queries as `insights` or `analytical`.
+- Runs web search only when the request sets `web_search=true`.
 - Decomposes complex questions into up to 3 sub-queries.
 - Routes single-purpose requests to one node and mixed requests through parallel LangGraph branches.
 - Streams NDJSON events to the client while the workflow runs.
@@ -27,9 +28,9 @@ app/
     events.py                     Streaming event helpers
   nodes/
     router_node.py                Starts the graph and emits initial progress
-    query_analyzer.py             LLM classification, decomposition, scope checks
+    query_analyzer.py             Internal LLM classification and decomposition
     insights_node.py              Qualitative answer generation
-    analytical_node.py            Quantitative/structured answer generation
+    analytical_node.py            LLM-based quantitative/structured reasoning
     web_search_node.py            Web search plus LLM answer generation
     summary_node.py               Final synthesis and response emission
   memory/conversation_store.py    File-backed conversation persistence
@@ -62,15 +63,15 @@ flowchart TD
 
     M -- "insights" --> N["insights_node"]
     M -- "analytical" --> O["analytical_node"]
-    M -- "web_search" --> P["web_search_node"]
-    M -- "mixed" --> Q["parallel_start"]
-    M -- "no in-scope query" --> R["summary_node"]
+    M -- "web_search=true + insights" --> Q1["parallel_insights_web"]
+    M -- "web_search=true + analytical" --> Q2["parallel_analytical_web"]
 
-    Q --> N
-    Q --> O
-    Q --> P
+    Q1 --> N
+    Q1 --> P["web_search_node"]
+    Q2 --> O
+    Q2 --> P
 
-    N --> R
+    N --> R["summary_node"]
     O --> R
     P --> R
 
@@ -94,11 +95,12 @@ Content-Type: application/json
 ```json
 {
   "user_query": "Explain the difference between supervised and unsupervised learning",
-  "conversation_id": "optional-existing-conversation-id"
+  "conversation_id": "optional-existing-conversation-id",
+  "web_search": false
 }
 ```
 
-`conversation_id` is optional. If omitted, the orchestrator generates a UUID and starts a new conversation.
+`conversation_id` is optional. If omitted, the orchestrator generates a UUID and starts a new conversation. `web_search` defaults to `false`; when set to `true`, the workflow runs the web search node in addition to the internal insights or analytical node.
 
 ### Response Format
 
@@ -138,6 +140,10 @@ CONVERSATIONS_DIR=conversations
 MAX_HISTORY_TURNS=20
 KEEP_RECENT_TURNS=10
 BRAVE_SEARCH_API_KEY=
+LLM_TIMEOUT_SECONDS=60
+LLM_MAX_RETRIES=2
+WEB_SEARCH_TIMEOUT_SECONDS=15
+WEB_SEARCH_MAX_RETRIES=1
 ```
 
 4. Run the app:
@@ -148,11 +154,23 @@ python run.py
 
 The API will be available at `http://localhost:8000`.
 
+## Tests
+
+Run tests from a virtual environment with project dependencies installed so API, Pydantic, and LangGraph tests are not skipped:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python -m compileall app runtime tests
+python -m unittest discover -s tests
+```
+
 ## Runtime Configuration
 
 `runtime/runtime_config.py` initializes:
 
-- `LLMClient`, using `ANTHROPIC_API_KEY` and `CLAUDE_MODEL`.
+- `LLMClient`, using `ANTHROPIC_API_KEY`, `CLAUDE_MODEL`, timeout, and retry settings.
 - `PromptLoader`, reading `prompts/prompts.yaml`.
 - The compiled LangGraph from `build_orchestrator_graph()`.
 

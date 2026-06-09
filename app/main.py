@@ -12,15 +12,21 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.health import router as health_router
 from app.api.routes import router
-from runtime.runtime_config import init_runtime
+from runtime.runtime_config import close_runtime, init_runtime
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_runtime()
-    yield
+    try:
+        yield
+    finally:
+        await close_runtime()
 
 
 app = FastAPI(title="RAG Chatbot", lifespan=lifespan)
+app.include_router(health_router)
+app.include_router(health_router, prefix="/api")
 app.include_router(router, prefix="/api")
