@@ -10,6 +10,7 @@ from app.nodes.query_analyzer import query_analyzer_node
 from app.nodes.router_node import router_node
 from app.nodes.summary_node import summary_node
 from app.nodes.web_search_node import web_search_node
+from app.orchestrator.node_wrapper import with_node_error_handling
 from app.orchestrator.state import GraphState
 
 
@@ -39,9 +40,30 @@ def build_orchestrator_graph():
     graph.add_node("router_node", router_node)
     graph.add_node("query_analyzer", query_analyzer_node)
     graph.add_node("parallel_start", parallel_start_node)
-    graph.add_node("insights", insights_node)
-    graph.add_node("analytical", analytical_node)
-    graph.add_node("web_search", web_search_node)
+    graph.add_node(
+        "insights",
+        with_node_error_handling(
+            insights_node,
+            node_name="insights",
+            branch_name="insights",
+        ),
+    )
+    graph.add_node(
+        "analytical",
+        with_node_error_handling(
+            analytical_node,
+            node_name="analytical",
+            branch_name="analytical",
+        ),
+    )
+    graph.add_node(
+        "web_search",
+        with_node_error_handling(
+            web_search_node,
+            node_name="web_search",
+            branch_name="web_search",
+        ),
+    )
     graph.add_node("summary", summary_node)
 
     graph.set_entry_point("router_node")

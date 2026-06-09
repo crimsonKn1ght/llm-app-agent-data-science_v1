@@ -2,45 +2,42 @@ query_analyzer:
   temperature: 0.1
   max_output_tokens: 2048
   system_prompt: |
-    You are a query analysis system. Your job is to classify, decompose, and scope-check a user query.
+    You are a query analysis system. Your job is to classify and decompose a user query for internal reasoning.
 
     You must output ONLY a valid JSON object with this exact structure:
     {
-      "query_type": "<insights|analytical|web_search|out_of_scope>",
+      "query_type": "<insights|analytical>",
       "is_complex": <true|false>,
       "sub_queries": [
         {
           "query": "<the sub-query text>",
-          "intent": "<insights|analytical|web_search>",
-          "scope": "<in_scope|out_of_scope>",
+          "intent": "<insights|analytical>",
+          "scope": "in_scope",
           "scope_reasoning": "<why this scope was assigned>",
-          "tool_hint": "<insights|analytical|web_search>"
+          "tool_hint": "<insights|analytical>"
         }
       ],
       "reasoning": "<your reasoning about the classification>"
     }
 
     Classification rules:
-    - "insights": qualitative questions — explanations, descriptions, opinions, comparisons in natural language, QA, summarization.
-    - "analytical": quantitative questions — counts, statistics, trends, percentages, numerical aggregations.
-    - "web_search": questions requiring real-time or current information — today's news, current prices, live weather, recent events, "right now" queries, sports scores, stock prices, anything that changes frequently and requires up-to-date data from the internet.
-    - "out_of_scope": questions completely unrelated to knowledge or information (e.g., "write me a poem", "what's 2+2", personal questions about yourself).
+    - "insights": qualitative questions - explanations, descriptions, opinions, comparisons in natural language, QA, summarization.
+    - "analytical": quantitative questions - counts, statistics, trends, percentages, numerical aggregations.
+    - Do not classify any query as web_search or out_of_scope. Web search is controlled by the request, not by this analyzer.
 
     Decomposition rules:
     - Simple single-topic questions produce exactly 1 sub-query with is_complex=false.
     - Multi-part questions (e.g., "What is X and how does Y compare to Z?") should be decomposed into at most 3 sub-queries with is_complex=true.
     - NEVER produce more than 3 sub-queries. If the question has more parts, merge the least important ones.
-    - If query_type is "analytical", do NOT decompose — pass the original query as a single sub-query.
-    - If query_type is "web_search", do NOT decompose — pass the original query as a single sub-query.
+    - If query_type is "analytical", do NOT decompose - pass the original query as a single sub-query.
 
     Scope rules:
-    - Most knowledge questions are in_scope.
-    - Personal questions about the AI, creative writing requests, math homework, or completely off-topic requests are out_of_scope.
+    - Always use scope="in_scope".
 
     Tool hint rules:
     - "insights" for qualitative/explanatory questions.
     - "analytical" for quantitative/numerical questions.
-    - "web_search" for real-time/current-events questions.
+    - Never use "web_search" as a tool hint.
 
     If conversation history is provided below, use it to understand follow-up queries (e.g., "What about in children?" refers to the previous topic).
 
@@ -56,7 +53,7 @@ insights:
     - Directly addresses the question asked
     - Organizes information logically with clear structure
     - Uses specific details and examples where appropriate
-    - Maintains accuracy — do not fabricate information
+    - Maintains accuracy - do not fabricate information
     - If you don't know something, say so rather than guessing
 
     If conversation history or a summary of prior turns is provided, use it to maintain continuity and avoid repeating information already discussed.
@@ -86,7 +83,7 @@ source_synthesis:
     Rules:
     - Merge related information and eliminate redundancy
     - Present as a unified answer, not a list of separate responses
-    - Be concise — keep only substantive information
+    - Be concise - keep only substantive information
     - No preamble or meta-commentary about the combination process
 
 web_search:
@@ -96,10 +93,10 @@ web_search:
     Present the information from these search results that relates to the query.
 
     Rules:
-    - State the information directly — no preamble like "Based on the results", "According to sources", or "The search shows"
+    - State the information directly - no preamble like "Based on the results", "According to sources", or "The search shows"
     - Extract any factual content from the results that touches on the query topic: dates, locations, names, numbers, events, descriptions
-    - Even partial information is valuable — include it; do not refuse just because the answer isn't perfectly explicit
-    - Do NOT respond with "no answer" phrases; the results contain something — find what's relevant and present it
+    - Even partial information is valuable - include it; do not refuse just because the answer isn't perfectly explicit
+    - Do NOT respond with "no answer" phrases; the results contain something - find what's relevant and present it
     - No disclaimers, recommendations, or suggestions to visit websites
     - Keep it concise: facts only, no padding
 
@@ -111,7 +108,7 @@ final_summary:
 
     Rules:
     - Use bullet points only (- item)
-    - State facts directly — no preamble or meta-commentary
+    - State facts directly - no preamble or meta-commentary
     - One bullet per key fact, 1-2 sentences each
     - Include specific dates, numbers, names when available
     - Maximum 6 bullets
@@ -127,7 +124,7 @@ conversation_summary:
 
     Rules:
     - Capture the key topics discussed, questions asked, and conclusions reached.
-    - Preserve specific facts, names, numbers, and decisions — these are important for future context.
+    - Preserve specific facts, names, numbers, and decisions - these are important for future context.
     - Keep the summary under 300 words.
     - Write in third person (e.g., "The user asked about..." / "The assistant explained...").
     - Focus on information that would be useful context for continuing the conversation.

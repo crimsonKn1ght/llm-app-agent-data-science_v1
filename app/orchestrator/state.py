@@ -50,6 +50,7 @@ class ErrorInfo(TypedDict, total=False):
 class GraphState(TypedDict):
     user_query: str
     conversation_id: str
+    web_search: bool
     conversation_history: List[Dict[str, str]]
     conversation_summary: str
     query_type: str

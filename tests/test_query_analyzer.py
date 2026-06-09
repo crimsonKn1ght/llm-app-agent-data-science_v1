@@ -66,8 +66,9 @@ class QueryAnalyzerValidationTests(unittest.TestCase):
 ```"""
         result = query_analyzer._parse_validate_repair_result(raw, "latest AI news")
 
-        self.assertEqual(result["query_type"], "web_search")
+        self.assertEqual(result["query_type"], "insights")
         self.assertEqual(result["sub_queries"][0]["query"], "latest AI news")
+        self.assertEqual(result["sub_queries"][0]["tool_hint"], "insights")
 
     def test_extra_text_around_json_is_extracted(self):
         raw = """Here is the result:
@@ -113,14 +114,14 @@ Thanks."""
         self.assertEqual(result["query_type"], "analytical")
         self.assertEqual(result["sub_queries"][0]["tool_hint"], "analytical")
 
-    def test_current_query_fallback_chooses_web_search(self):
+    def test_current_query_fallback_chooses_insights(self):
         result = query_analyzer._fallback_result(
             "What is the latest AI news today?",
             "invalid JSON",
         )
 
-        self.assertEqual(result["query_type"], "web_search")
-        self.assertEqual(result["sub_queries"][0]["tool_hint"], "web_search")
+        self.assertEqual(result["query_type"], "insights")
+        self.assertEqual(result["sub_queries"][0]["tool_hint"], "insights")
 
     def test_generic_fallback_chooses_insights(self):
         result = query_analyzer._fallback_result(
@@ -152,7 +153,7 @@ Thanks."""
         self.assertEqual(len(result["sub_queries"]), query_analyzer.MAX_SUB_QUERIES)
         self.assertTrue(result["is_complex"])
 
-    def test_out_of_scope_validated_output_produces_oos_result(self):
+    def test_out_of_scope_validated_output_normalizes_to_insights(self):
         raw = self._raw({
             "query_type": "out_of_scope",
             "is_complex": False,
@@ -166,6 +167,7 @@ Thanks."""
         state = {
             "user_query": "Write a poem",
             "conversation_id": "conv",
+            "web_search": False,
             "conversation_history": [],
             "conversation_summary": "",
             "query_type": "",
@@ -186,8 +188,93 @@ Thanks."""
 
         result = asyncio.run(query_analyzer.query_analyzer_node(state))
 
-        self.assertEqual(result["sub_queries"], [])
-        self.assertEqual(result["agent_results"][0]["status"], "out_of_scope")
+        self.assertEqual(result["query_type"], "insights")
+        self.assertEqual(result["agent_results"], [])
+        self.assertEqual(result["sub_queries"][0]["tool_hint"], "insights")
+        self.assertEqual(result["sub_queries"][0]["scope"], "in_scope")
+
+    def test_web_search_flag_appends_synthetic_web_query(self):
+        raw = self._raw({
+            "query_type": "analytical",
+            "is_complex": False,
+            "sub_queries": [{
+                "query": "How many launches happened?",
+                "intent": "analytical",
+                "scope": "in_scope",
+                "tool_hint": "analytical",
+            }],
+        })
+        state = {
+            "user_query": "How many launches happened and what is latest news?",
+            "conversation_id": "conv",
+            "web_search": True,
+            "conversation_history": [],
+            "conversation_summary": "",
+            "query_type": "",
+            "is_complex": False,
+            "sub_queries": [],
+            "agent_results": [],
+            "source_contents": {},
+            "final_response": "",
+            "compiler_metadata": {},
+            "stream_queue": asyncio.Queue(),
+            "runtime": _FakeRuntime(raw),
+            "execution_path": [],
+            "expected_branches": [],
+            "completed_branches": [],
+            "error": {"has_error": False},
+            "is_error_state": False,
+        }
+
+        result = asyncio.run(query_analyzer.query_analyzer_node(state))
+
+        self.assertEqual(
+            [sq["tool_hint"] for sq in result["sub_queries"]],
+            ["analytical", "web_search"],
+        )
+        self.assertEqual(result["expected_branches"], ["analytical", "web_search"])
+        self.assertEqual(
+            result["sub_queries"][-1]["scope_reasoning"],
+            "Web search requested by API flag",
+        )
+
+    def test_web_search_false_does_not_append_web_query(self):
+        raw = self._raw({
+            "query_type": "insights",
+            "is_complex": False,
+            "sub_queries": [{
+                "query": "Explain AI",
+                "intent": "insights",
+                "scope": "in_scope",
+                "tool_hint": "insights",
+            }],
+        })
+        state = {
+            "user_query": "Explain AI",
+            "conversation_id": "conv",
+            "web_search": False,
+            "conversation_history": [],
+            "conversation_summary": "",
+            "query_type": "",
+            "is_complex": False,
+            "sub_queries": [],
+            "agent_results": [],
+            "source_contents": {},
+            "final_response": "",
+            "compiler_metadata": {},
+            "stream_queue": asyncio.Queue(),
+            "runtime": _FakeRuntime(raw),
+            "execution_path": [],
+            "expected_branches": [],
+            "completed_branches": [],
+            "error": {"has_error": False},
+            "is_error_state": False,
+        }
+
+        result = asyncio.run(query_analyzer.query_analyzer_node(state))
+
+        self.assertEqual([sq["tool_hint"] for sq in result["sub_queries"]], ["insights"])
+        self.assertEqual(result["expected_branches"], ["insights"])
 
 
 if __name__ == "__main__":

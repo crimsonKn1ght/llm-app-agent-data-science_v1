@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 async def orchestrate(
     user_query: str,
     conversation_id: Optional[str],
+    web_search: bool,
     stream_queue: asyncio.Queue,
 ) -> str:
     if not conversation_id:
@@ -52,6 +53,7 @@ async def orchestrate(
     initial_state: GraphState = {
         "user_query": user_query,
         "conversation_id": conversation_id,
+        "web_search": web_search,
         "conversation_history": conversation_history,
         "conversation_summary": conversation_summary,
         "query_type": "",

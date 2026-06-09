@@ -8,24 +8,21 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.orchestrator.events import emit_progress
-from app.orchestrator.results import make_out_of_scope_result
-from app.orchestrator.state import AgentResult, DecomposedQuery, GraphState
+from app.orchestrator.state import DecomposedQuery, GraphState
 
 logger = logging.getLogger(__name__)
 
 MAX_SUB_QUERIES = 3
-VALID_QUERY_TYPES = {"analytical", "insights", "out_of_scope", "web_search"}
-VALID_SCOPES = {"in_scope", "out_of_scope"}
+VALID_QUERY_TYPES = {"analytical", "insights"}
 
 INTENT_TO_TOOL = {
     "insights": "insights",
     "analytical": "analytical",
-    "web_search": "web_search",
 }
 
-QueryType = Literal["analytical", "insights", "out_of_scope", "web_search"]
-Scope = Literal["in_scope", "out_of_scope"]
-ToolHint = Literal["insights", "analytical", "web_search"]
+QueryType = Literal["analytical", "insights"]
+Scope = Literal["in_scope"]
+ToolHint = Literal["insights", "analytical"]
 
 
 class AnalyzerSubQueryModel(BaseModel):
@@ -61,10 +58,7 @@ class AnalyzerSubQueryModel(BaseModel):
             tool_hint = INTENT_TO_TOOL[intent]
         normalized["tool_hint"] = tool_hint
 
-        scope = str(normalized.get("scope") or "").strip()
-        if scope not in VALID_SCOPES:
-            scope = "in_scope"
-        normalized["scope"] = scope
+        normalized["scope"] = "in_scope"
 
         return normalized
 
@@ -173,32 +167,6 @@ def _model_to_result(model: AnalyzerResultModel, original_query: str) -> Dict[st
             }],
         }
 
-    if query_type == "web_search":
-        return {
-            "query_type": "web_search",
-            "is_complex": False,
-            "sub_queries": [{
-                "query": original_query,
-                "intent": "web_search",
-                "scope": "in_scope",
-                "scope_reasoning": "Web search queries passed through without decomposition",
-                "tool_hint": "web_search",
-            }],
-        }
-
-    if query_type == "out_of_scope":
-        return {
-            "query_type": "out_of_scope",
-            "is_complex": False,
-            "sub_queries": [{
-                "query": original_query,
-                "intent": "insights",
-                "scope": "out_of_scope",
-                "scope_reasoning": "Top-level analyzer classification was out_of_scope",
-                "tool_hint": "insights",
-            }],
-        }
-
     sub_queries = model.sub_queries[:MAX_SUB_QUERIES]
     normalized = [
         {
@@ -230,17 +198,12 @@ def _parse_validate_repair_result(raw: str, original_query: str) -> Dict[str, An
 
 def _classify_fallback_query(original_query: str) -> QueryType:
     query = original_query.lower()
-    web_patterns = (
-        r"\b(current|recent|latest|live|today|now|right now|news|weather|sports|score|stock|price|prices)\b",
-    )
     analytical_patterns = (
         r"\b(count|counts|statistic|statistics|average|mean|median|percentage|percent|trend|trends)\b",
         r"\bhow many\b",
         r"\bcompare\b.*\b(number|numeric|percentage|count|average|trend)\b",
     )
 
-    if any(re.search(pattern, query) for pattern in web_patterns):
-        return "web_search"
     if any(re.search(pattern, query) for pattern in analytical_patterns):
         return "analytical"
     return "insights"
@@ -248,17 +211,27 @@ def _classify_fallback_query(original_query: str) -> QueryType:
 
 def _fallback_result(original_query: str, reason: str) -> Dict[str, Any]:
     query_type = _classify_fallback_query(original_query)
-    intent = query_type if query_type != "out_of_scope" else "insights"
     return {
         "query_type": query_type,
         "is_complex": False,
         "sub_queries": [{
             "query": original_query,
-            "intent": intent,
+            "intent": query_type,
             "scope": "in_scope",
             "scope_reasoning": f"Fallback {query_type} routing - {reason}",
-            "tool_hint": INTENT_TO_TOOL[intent],
+            "tool_hint": INTENT_TO_TOOL[query_type],
         }],
+    }
+
+
+def _web_search_sub_query(original_query: str, sub_query_id: int) -> DecomposedQuery:
+    return {
+        "sub_query_id": sub_query_id,
+        "query": original_query,
+        "intent": "web_search",
+        "scope": "in_scope",
+        "scope_reasoning": "Web search requested by API flag",
+        "tool_hint": "web_search",
     }
 
 
@@ -300,31 +273,19 @@ async def query_analyzer_node(state: GraphState) -> Dict[str, Any]:
     sub_queries_raw = result["sub_queries"]
 
     in_scope_queries: List[DecomposedQuery] = []
-    out_of_scope_results: List[AgentResult] = []
 
     for idx, sq in enumerate(sub_queries_raw, start=1):
-        if sq["scope"] == "out_of_scope":
-            out_of_scope_results.append(make_out_of_scope_result(
-                sub_query_id=idx,
-                query=sq["query"],
-                result="This question is outside the scope of what I can help with.",
-                source="query_analyzer",
-                scope_reasoning=sq.get("scope_reasoning", ""),
-                tool_metadata={
-                    "query_type": query_type,
-                    "intent": sq.get("intent", ""),
-                    "tool_hint": sq.get("tool_hint", ""),
-                },
-            ))
-        else:
-            in_scope_queries.append({
-                "sub_query_id": idx,
-                "query": sq["query"],
-                "intent": sq["intent"],
-                "scope": "in_scope",
-                "scope_reasoning": sq.get("scope_reasoning", ""),
-                "tool_hint": sq.get("tool_hint", "insights"),
-            })
+        in_scope_queries.append({
+            "sub_query_id": idx,
+            "query": sq["query"],
+            "intent": sq["intent"],
+            "scope": "in_scope",
+            "scope_reasoning": sq.get("scope_reasoning", ""),
+            "tool_hint": sq.get("tool_hint", "insights"),
+        })
+
+    if state.get("web_search", False):
+        in_scope_queries.append(_web_search_sub_query(user_query, len(in_scope_queries) + 1))
 
     if is_complex and len(in_scope_queries) > 1:
         parts = "\n".join(
@@ -339,8 +300,8 @@ async def query_analyzer_node(state: GraphState) -> Dict[str, Any]:
     expected_branches = sorted(tool_hints) if tool_hints else []
 
     logger.info(
-        "Query classified | type=%s | is_complex=%s | in_scope=%d | out_of_scope=%d | branches=%s",
-        query_type, is_complex, len(in_scope_queries), len(out_of_scope_results), expected_branches,
+        "Query classified | type=%s | is_complex=%s | in_scope=%d | branches=%s",
+        query_type, is_complex, len(in_scope_queries), expected_branches,
     )
     for sq in in_scope_queries:
         logger.debug(
@@ -353,6 +314,6 @@ async def query_analyzer_node(state: GraphState) -> Dict[str, Any]:
         "query_type": query_type,
         "is_complex": is_complex,
         "sub_queries": in_scope_queries,
-        "agent_results": out_of_scope_results,
+        "agent_results": [],
         "expected_branches": expected_branches,
     }

@@ -19,6 +19,7 @@ router = APIRouter()
 class ChatRequest(BaseModel):
     user_query: str
     conversation_id: Optional[str] = None
+    web_search: bool = False
 
 
 @router.post("/chat/generate")
@@ -29,6 +30,7 @@ async def chat_endpoint(request: ChatRequest):
         await orchestrate(
             user_query=request.user_query,
             conversation_id=request.conversation_id,
+            web_search=request.web_search,
             stream_queue=stream_queue,
         )
 
