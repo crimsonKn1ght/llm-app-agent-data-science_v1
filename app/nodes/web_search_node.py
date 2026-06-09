@@ -21,6 +21,9 @@ SOURCE_KEY = "web_search"
 HEADER = "## Web Search\n\n"
 NO_RELEVANT_ANSWER = "No relevant answer retrieved based on this query"
 MAX_SEARCH_RESULTS = 5
+WEB_SEARCH_TIMEOUT_SECONDS = float(os.getenv("WEB_SEARCH_TIMEOUT_SECONDS", "15"))
+WEB_SEARCH_MAX_RETRIES = int(os.getenv("WEB_SEARCH_MAX_RETRIES", "1"))
+WEB_SEARCH_RETRY_BACKOFF_SECONDS = 0.25
 
 
 def _get_my_queries(state: GraphState) -> List[DecomposedQuery]:
@@ -62,7 +65,7 @@ def _brave_search(query: str) -> List[Dict[str, str]]:
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=WEB_SEARCH_TIMEOUT_SECONDS) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         items = data.get("web", {}).get("results", [])
         results = [
@@ -82,14 +85,37 @@ def _brave_search(query: str) -> List[Dict[str, str]]:
 
 
 async def _search(query: str) -> List[Dict[str, str]]:
-    results = await asyncio.to_thread(_ddgs_text, query)
-    if results:
-        return [{**r, "provider": r.get("provider", "duckduckgo")} for r in results]
+    last_error: Exception | None = None
 
-    if os.getenv("BRAVE_SEARCH_API_KEY"):
-        logger.info("DDGS returned no results, trying Brave Search fallback")
-        results = await asyncio.to_thread(_brave_search, query)
-    return results
+    for attempt in range(WEB_SEARCH_MAX_RETRIES + 1):
+        try:
+            results = await asyncio.wait_for(
+                asyncio.to_thread(_ddgs_text, query),
+                timeout=WEB_SEARCH_TIMEOUT_SECONDS,
+            )
+            if results:
+                return [{**r, "provider": r.get("provider", "duckduckgo")} for r in results]
+
+            if os.getenv("BRAVE_SEARCH_API_KEY"):
+                logger.info("DDGS returned no results, trying Brave Search fallback")
+                results = await asyncio.wait_for(
+                    asyncio.to_thread(_brave_search, query),
+                    timeout=WEB_SEARCH_TIMEOUT_SECONDS,
+                )
+            return results
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "Web search attempt failed | attempt=%d/%d | error=%s",
+                attempt + 1,
+                WEB_SEARCH_MAX_RETRIES + 1,
+                type(exc).__name__,
+            )
+            if attempt < WEB_SEARCH_MAX_RETRIES:
+                await asyncio.sleep(WEB_SEARCH_RETRY_BACKOFF_SECONDS * (attempt + 1))
+
+    assert last_error is not None
+    raise last_error
 
 
 # ── Result formatting ────────────────────────────────────────────────

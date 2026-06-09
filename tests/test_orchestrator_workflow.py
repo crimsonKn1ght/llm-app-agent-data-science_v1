@@ -64,7 +64,7 @@ class OrchestratorWorkflowRoutingTests(unittest.TestCase):
             ],
         })
 
-        self.assertEqual(route, "parallel")
+        self.assertEqual(route, "insights_web")
 
     def test_web_search_true_with_analytical_routes_parallel(self):
         route = route_after_analysis({
@@ -89,7 +89,65 @@ class OrchestratorWorkflowRoutingTests(unittest.TestCase):
             ],
         })
 
-        self.assertEqual(route, "parallel")
+        self.assertEqual(route, "analytical_web")
+
+    def test_insights_and_analytical_routes_without_web(self):
+        route = route_after_analysis({
+            "web_search": False,
+            "sub_queries": [
+                {
+                    "sub_query_id": 1,
+                    "query": "Explain AI",
+                    "intent": "insights",
+                    "scope": "in_scope",
+                    "scope_reasoning": "",
+                    "tool_hint": "insights",
+                },
+                {
+                    "sub_query_id": 2,
+                    "query": "How many?",
+                    "intent": "analytical",
+                    "scope": "in_scope",
+                    "scope_reasoning": "",
+                    "tool_hint": "analytical",
+                },
+            ],
+        })
+
+        self.assertEqual(route, "insights_analytical")
+
+    def test_all_three_tools_routes_all(self):
+        route = route_after_analysis({
+            "web_search": True,
+            "sub_queries": [
+                {
+                    "sub_query_id": 1,
+                    "query": "Explain AI",
+                    "intent": "insights",
+                    "scope": "in_scope",
+                    "scope_reasoning": "",
+                    "tool_hint": "insights",
+                },
+                {
+                    "sub_query_id": 2,
+                    "query": "How many?",
+                    "intent": "analytical",
+                    "scope": "in_scope",
+                    "scope_reasoning": "",
+                    "tool_hint": "analytical",
+                },
+                {
+                    "sub_query_id": 3,
+                    "query": "Latest AI news",
+                    "intent": "web_search",
+                    "scope": "in_scope",
+                    "scope_reasoning": "Web search requested by API flag",
+                    "tool_hint": "web_search",
+                },
+            ],
+        })
+
+        self.assertEqual(route, "all")
 
 
 if __name__ == "__main__":

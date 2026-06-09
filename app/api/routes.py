@@ -7,19 +7,30 @@ from typing import Optional
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from app.orchestrator.orchestrator_entry import orchestrate
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+MAX_USER_QUERY_CHARS = 8000
 
 
 class ChatRequest(BaseModel):
-    user_query: str
+    user_query: str = Field(min_length=1, max_length=MAX_USER_QUERY_CHARS)
     conversation_id: Optional[str] = None
     web_search: bool = False
+
+    @field_validator("user_query", mode="before")
+    @classmethod
+    def _trim_and_validate_query(cls, value):
+        if value is None:
+            raise ValueError("user_query is required")
+        query = str(value).strip()
+        if not query:
+            raise ValueError("user_query must not be empty")
+        return query
 
 
 @router.post("/chat/generate")

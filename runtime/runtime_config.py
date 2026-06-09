@@ -80,3 +80,18 @@ def get_runtime() -> Runtime:
     if _runtime is None:
         return init_runtime()
     return _runtime
+
+
+async def close_runtime() -> None:
+    global _runtime
+
+    if _runtime is None:
+        return
+
+    close_func = getattr(_runtime.llm_client, "close", None)
+    if close_func is not None:
+        maybe_awaitable = close_func()
+        if hasattr(maybe_awaitable, "__await__"):
+            await maybe_awaitable
+
+    _runtime = None

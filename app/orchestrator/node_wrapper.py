@@ -4,12 +4,14 @@ import logging
 import time
 from typing import Any, Awaitable, Callable, Dict, List
 
+from app.orchestrator.events import emit_text
 from app.orchestrator.results import make_error_result
 from app.orchestrator.state import DecomposedQuery, GraphState
 
 logger = logging.getLogger(__name__)
 
 NodeFunc = Callable[[GraphState], Awaitable[Dict[str, Any]]]
+NODE_FAILURE_NOTICE = "{source} could not be completed. Continuing with available results."
 
 
 def _matching_queries(state: GraphState, tool_hint: str) -> List[DecomposedQuery]:
@@ -44,6 +46,17 @@ def with_node_error_handling(
         except Exception as exc:
             latency_ms = int((time.perf_counter() - started) * 1000)
             logger.error("%s failed | error=%s", node_name, exc, exc_info=True)
+            queue = state.get("stream_queue")
+            if queue is not None:
+                try:
+                    label = branch_name.replace("_", " ").title()
+                    await emit_text(
+                        queue,
+                        f"\n\n> {NODE_FAILURE_NOTICE.format(source=label)}\n\n",
+                        origin=branch_name,
+                    )
+                except Exception:
+                    logger.debug("Failed to emit node failure notice", exc_info=True)
 
             error_results = [
                 make_error_result(

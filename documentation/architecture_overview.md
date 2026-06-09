@@ -89,14 +89,15 @@ flowchart TD
 
     Q -- "tool_hint = insights" --> R["insights_node"]
     Q -- "tool_hint = analytical" --> S["analytical_node"]
-    Q -- "web_search=true or mixed tool_hints" --> U["parallel_start"]
-    Q -- "only out-of-scope" --> V["summary_node"]
+    Q -- "web_search=true + insights" --> U1["parallel_insights_web"]
+    Q -- "web_search=true + analytical" --> U2["parallel_analytical_web"]
 
-    U --> R
-    U --> S
-    U --> T
+    U1 --> R
+    U1 --> T["web_search_node"]
+    U2 --> S
+    U2 --> T
 
-    R --> V
+    R --> V["summary_node"]
     S --> V
     T --> V
 
@@ -122,11 +123,13 @@ flowchart TD
 
     Decision -- "insights" --> Insights["insights"]
     Decision -- "analytical" --> Analytical["analytical"]
-    Decision -- "web_search=true" --> Parallel["parallel_start"]
+    Decision -- "web_search=true + insights" --> ParallelIW["parallel_insights_web"]
+    Decision -- "web_search=true + analytical" --> ParallelAW["parallel_analytical_web"]
 
-    Parallel --> Insights
-    Parallel --> Analytical
-    Parallel --> Web
+    ParallelIW --> Insights
+    ParallelIW --> Web["web_search"]
+    ParallelAW --> Analytical
+    ParallelAW --> Web
 
     Insights --> Summary
     Analytical --> Summary
@@ -150,10 +153,12 @@ flowchart TD
 | --- | --- |
 | All sub-queries use `insights` | `insights` |
 | All sub-queries use `analytical` | `analytical` |
-| `web_search=true` adds a synthetic web sub-query | `parallel_start`, then internal node plus `web_search_node` run |
-| Mixed tool hints | `parallel_start`, then matching answer nodes run |
+| `web_search=true` with insights | `parallel_insights_web`, then `insights` plus `web_search` run |
+| `web_search=true` with analytical | `parallel_analytical_web`, then `analytical` plus `web_search` run |
+| Mixed internal tool hints | `parallel_insights_analytical`, then `insights` plus `analytical` run |
+| All three tool hints | `parallel_all`, then all agent nodes run |
 
-Web search is request-owned, not analyzer-owned. The analyzer never intentionally emits `web_search`; when the API request sets `web_search=true`, the analyzer node appends a synthetic web sub-query using the original user query. In the parallel route, each answer node filters `state["sub_queries"]` for its own `tool_hint`. Nodes with no matching sub-queries return empty results and complete quickly.
+Web search is request-owned, not analyzer-owned. The analyzer never intentionally emits `web_search`; when the API request sets `web_search=true`, the analyzer node appends a synthetic web sub-query using the original user query. Parallel routes target only the required workflow nodes.
 
 ## GraphState
 
@@ -203,7 +208,7 @@ Handles qualitative or explanatory questions. It streams a `## Insights` section
 
 ### `analytical_node`
 
-Handles quantitative or structured reasoning questions. Its mechanics mirror `insights_node`, but it uses the `analytical` prompt and streams a `## Analysis` section.
+Handles quantitative or structured reasoning questions with LLM-based analytical reasoning. It does not execute database-backed analytics or code; its mechanics mirror `insights_node`, but it uses the `analytical` prompt and streams a `## Analysis` section.
 
 ### `web_search_node`
 
@@ -307,17 +312,21 @@ At the end of a successful request, the new user/assistant turn is appended. If 
 | --- | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | Yes | None | Anthropic API key used by `LLMClient` |
 | `CLAUDE_MODEL` | No | `claude-haiku-4-5-20251001` | Model name |
+| `LLM_TIMEOUT_SECONDS` | No | `60` | Timeout for each LLM call attempt |
+| `LLM_MAX_RETRIES` | No | `2` | Retry count after LLM call failures before surfacing an error |
 | `CONVERSATIONS_DIR` | No | `conversations` | Conversation JSON storage directory |
 | `MAX_HISTORY_TURNS` | No | `20` | Compress once history exceeds this many messages |
 | `KEEP_RECENT_TURNS` | No | `10` | Recent messages retained after compression |
 | `BRAVE_SEARCH_API_KEY` | No | Empty | Optional fallback for web search |
+| `WEB_SEARCH_TIMEOUT_SECONDS` | No | `15` | Timeout for each web search provider attempt |
+| `WEB_SEARCH_MAX_RETRIES` | No | `1` | Retry count after web search timeouts/failures |
 
 ## Important Implementation Notes
 
 - The route streams results while the graph is still running; clients should process NDJSON incrementally.
 - The graph always goes through `query_analyzer_node`; internal routing is based on analyzer output.
 - Web search is controlled only by the `web_search` request field.
-- Mixed requests fan out to all three answer nodes, but each node processes only matching sub-queries.
+- Mixed requests fan out only to the required answer nodes.
 - `summary_node` is the final convergence point for both single-node and parallel paths.
 - Conversation saving happens in `finally`, but only if a final response was produced.
 - Web search uses network-backed providers and can return limited results if those providers fail.

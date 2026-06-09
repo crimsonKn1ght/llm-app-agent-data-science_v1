@@ -46,6 +46,9 @@ class NodeWrapperTests(unittest.TestCase):
             branch_name="web_search",
         )
         result = asyncio.run(wrapped(state))
+        events = []
+        while not state["stream_queue"].empty():
+            events.append(state["stream_queue"].get_nowait())
 
         self.assertEqual(result["execution_path"], ["web_search"])
         self.assertEqual(result["completed_branches"], ["web_search"])
@@ -54,6 +57,8 @@ class NodeWrapperTests(unittest.TestCase):
         self.assertEqual(result["agent_results"][0]["status"], "error")
         self.assertEqual(result["agent_results"][0]["source"], "web_search")
         self.assertNotIn("backend exploded", result["agent_results"][0]["result"])
+        self.assertEqual(events[0]["type"], "text")
+        self.assertIn("Web Search could not be completed", events[0]["text"])
 
 
 if __name__ == "__main__":

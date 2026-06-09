@@ -18,6 +18,22 @@ async def parallel_start_node(state: GraphState) -> Dict[str, Any]:
     return {"execution_path": ["parallel_start"]}
 
 
+async def parallel_insights_web_node(state: GraphState) -> Dict[str, Any]:
+    return {"execution_path": ["parallel_insights_web"]}
+
+
+async def parallel_analytical_web_node(state: GraphState) -> Dict[str, Any]:
+    return {"execution_path": ["parallel_analytical_web"]}
+
+
+async def parallel_insights_analytical_node(state: GraphState) -> Dict[str, Any]:
+    return {"execution_path": ["parallel_insights_analytical"]}
+
+
+async def parallel_all_node(state: GraphState) -> Dict[str, Any]:
+    return {"execution_path": ["parallel_all"]}
+
+
 def route_after_analysis(state: GraphState) -> str:
     sub_queries = state.get("sub_queries", [])
     if not sub_queries:
@@ -31,7 +47,14 @@ def route_after_analysis(state: GraphState) -> str:
             return hint
         return "insights"
 
-    return "parallel"
+    if tool_hints == {"insights", "web_search"}:
+        return "insights_web"
+    if tool_hints == {"analytical", "web_search"}:
+        return "analytical_web"
+    if tool_hints == {"insights", "analytical"}:
+        return "insights_analytical"
+
+    return "all"
 
 
 def build_orchestrator_graph():
@@ -40,6 +63,10 @@ def build_orchestrator_graph():
     graph.add_node("router_node", router_node)
     graph.add_node("query_analyzer", query_analyzer_node)
     graph.add_node("parallel_start", parallel_start_node)
+    graph.add_node("parallel_insights_web", parallel_insights_web_node)
+    graph.add_node("parallel_analytical_web", parallel_analytical_web_node)
+    graph.add_node("parallel_insights_analytical", parallel_insights_analytical_node)
+    graph.add_node("parallel_all", parallel_all_node)
     graph.add_node(
         "insights",
         with_node_error_handling(
@@ -74,13 +101,30 @@ def build_orchestrator_graph():
         "analytical": "analytical",
         "web_search": "web_search",
         "parallel": "parallel_start",
+        "insights_web": "parallel_insights_web",
+        "analytical_web": "parallel_analytical_web",
+        "insights_analytical": "parallel_insights_analytical",
+        "all": "parallel_all",
         "summary": "summary",
     })
 
-    # Parallel fan-out: all three run concurrently
+    # Fallback fan-out: all three run concurrently
     graph.add_edge("parallel_start", "insights")
     graph.add_edge("parallel_start", "analytical")
     graph.add_edge("parallel_start", "web_search")
+
+    graph.add_edge("parallel_insights_web", "insights")
+    graph.add_edge("parallel_insights_web", "web_search")
+
+    graph.add_edge("parallel_analytical_web", "analytical")
+    graph.add_edge("parallel_analytical_web", "web_search")
+
+    graph.add_edge("parallel_insights_analytical", "insights")
+    graph.add_edge("parallel_insights_analytical", "analytical")
+
+    graph.add_edge("parallel_all", "insights")
+    graph.add_edge("parallel_all", "analytical")
+    graph.add_edge("parallel_all", "web_search")
 
     # All agent nodes converge on summary.
     # For single-type: only one agent runs, goes to summary.

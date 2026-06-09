@@ -38,6 +38,28 @@ class RuntimeConfigTests(unittest.TestCase):
         self.assertNotIn("ANTHROPIC_API_KEY", status["missing"])
         self.assertIn("runtime", status["missing"])
 
+    def test_close_runtime_closes_llm_client_and_clears_runtime(self):
+        class _FakeClient:
+            def __init__(self):
+                self.closed = False
+
+            async def close(self):
+                self.closed = True
+
+        fake_client = _FakeClient()
+        runtime_config._runtime = runtime_config.Runtime(
+            llm_client=fake_client,
+            prompt_loader=object(),
+            compiled_graph=object(),
+        )
+
+        import asyncio
+
+        asyncio.run(runtime_config.close_runtime())
+
+        self.assertTrue(fake_client.closed)
+        self.assertIsNone(runtime_config._runtime)
+
 
 if __name__ == "__main__":
     unittest.main()
