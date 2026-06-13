@@ -1,0 +1,163 @@
+# Shared Utilities And Infrastructure
+
+## Files
+
+```text
+app/utils/vault.py
+app/utils/security.py
+app/utils/cache.py
+app/utils/date_util.py
+app/utils/setup.py
+settings.py
+Dockerfile
+linked_services/
+```
+
+## Role In The Backend
+
+This component contains helper code and infrastructure definitions used across the service. It is not one business feature; it is the support layer that keeps configuration, secrets, date handling, token helpers, caching, container builds, and deployment consistent.
+
+## Vault Handler
+
+[app/utils/vault.py](../../app/utils/vault.py) defines `VaultHandler`.
+
+Responsibilities:
+
+- Lazily initialize an Azure Key Vault `SecretClient`.
+- Use `DefaultAzureCredential` first.
+- Fall back to `AzureCliCredential` for local development.
+- Cache the client in a thread-safe class variable.
+- Retry once after clearing the client when a secret lookup fails.
+- Fall back to environment variables if Key Vault lookup fails.
+
+Secret lookup normalizes names:
+
+```text
+sql-server -> Key Vault: sql-server, env var: SQL_SERVER
+sql_server -> Key Vault: sql-server, env var: SQL_SERVER
+```
+
+Primary consumers:
+
+```text
+BaseModelBuilder.init()
+app/api/auth/router.py
+app/middlewares/auth_middleware.py
+app/utils/security.py
+```
+
+## Security Helpers
+
+[app/utils/security.py](../../app/utils/security.py) contains:
+
+```text
+encrypt_token()
+decrypt_token()
+decode_and_validate_jwt()
+_get_ping_public_key()
+```
+
+`encrypt_token` and `decrypt_token` derive a Fernet key from `jwt-secret`.
+
+Current implementation note: the live auth paths have token encryption/decryption commented out. These helpers are available, but not currently applied to the auth cookie in the main OAuth and middleware flow.
+
+`decode_and_validate_jwt()` can decode JWTs with or without signature verification. Signature verification depends on a local certificate under `certs/federation-gsk-com.pem.crt`, but the default call path does not verify signatures.
+
+## Cache Helper
+
+[app/utils/cache.py](../../app/utils/cache.py) defines a small `UserCache`,
+
+Characteristics:
+
+- In-memory dictionary.
+- Thread-safe through `threading.Lock`.
+- Per-process only.
+- Default TTL is 300 seconds.
+- Used by `/api/auth/me`.
+
+It is useful for reducing repeated user/persona/geography database lookups, but it is not a distributed cache.
+
+## Date Helpers
+
+[app/utils/date_util.py](../../app/utils/date_util.py) contains small timestamp/date validation helpers:
+
+```text
+now_time()
+get_current_timestamp()
+is_valid_date()
+```
+
+These are used by auth/session code when storing login/session timestamps.
+
+## Setup Helpers
+
+[app/utils/setup.py](../../app/utils/setup.py) defines:
+
+```text
+PROJECT_ROOT
+ENV_FILE
+load_environment()
+```
+
+`load_environment()` is currently a no-op kept for compatibility. Actual environment loading happens through `pydantic-settings` in [settings.py](../../settings.py).
+
+## Settings
+
+[settings.py](../../settings.py) declares required non-secret app settings:
+
+```text
+AZURE_KEY_VAULT_URL
+URL_ALLOWED_ORIGINS
+```
+
+It uses `ENV_FILE` for local `.env` support and ignores extra environment variables.
+
+Secrets should not be added to `Settings`; use `VaultHandler.get_secret()` instead.
+
+## Dockerfile
+
+[Dockerfile](../../Dockerfile) defines a two-stage image:
+
+- Builder stage installs Python dependencies.
+- Runtime stage installs Microsoft ODBC Driver 18 and runs Uvicorn.
+
+The runtime command is:
+
+```text
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+## Linked Services
+
+[linked_services](../../linked_services) contains Azure DevOps and Kubernetes assets.
+
+Important areas:
+
+```text
+linked_services/devops/pipeline/build/
+  CI pipeline that builds and pushes the image to ACR.
+
+linked_services/devops/pipeline/deploy/
+  CD pipeline that replaces manifest tokens and deploys to AKS.
+
+linked_services/devops/k8s/
+  Kubernetes deployment, service, probes, HPA, Workload Identity token mount.
+
+linked_services/devops/variables/
+  Build/deploy variable templates by environment.
+
+linked_services/shared-components/
+  Reusable pipeline templates.
+```
+
+## When To Touch This Component
+
+Change this component when you need to:
+
+- Add a new non-secret setting.
+- Add or change a Key Vault secret lookup.
+- Adjust local/deployed credential behavior.
+- Change cache TTL or cache invalidation behavior.
+- Enable token encryption in the live auth path.
+- Modify container runtime dependencies.
+- Update AKS probes, identity, resources, or pipeline behavior.

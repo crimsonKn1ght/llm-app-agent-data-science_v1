@@ -3,3 +3,7 @@ __pycache__/
 .env
 conversations/*.json
 logs/*.log
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+frontend/*.log

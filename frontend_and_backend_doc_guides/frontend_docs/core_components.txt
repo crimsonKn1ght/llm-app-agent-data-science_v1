@@ -1,0 +1,694 @@
+# Admin Experience
+
+The admin area manages app configuration and user administration.
+
+## Admin Routes
+
+Important files:
+
+- `src/app/admin/page.tsx`
+- `src/app/admin/layout.tsx`
+- `src/app/admin/tabs.tsx`
+- `src/app/admin/adminTable.tsx`
+- `src/app/admin/AddUserModal.tsx`
+- `src/app/admin/dataSourceConfig.tsx`
+
+## `src/app/admin/page.tsx`
+
+Top-level admin page.
+
+Responsibilities:
+
+- composes the admin screen,
+- coordinates tabbed admin sections,
+- relies on admin route layout for authenticated page framing.
+
+## `src/app/admin/tabs.tsx`
+
+Admin tab navigation.
+
+Responsibilities:
+
+- defines the available admin views,
+- switches between admin sections,
+- keeps the admin UI organized by task.
+
+## `src/app/admin/adminTable.tsx`
+
+Reusable admin table.
+
+Responsibilities:
+
+- displays admin data in tabular form,
+- supports user/data management interactions,
+- integrates with BFF admin routes for CRUD operations.
+
+## `src/app/admin/AddUserModal.tsx`
+
+User creation modal.
+
+Responsibilities:
+
+- captures new user details,
+- validates user input at the UI level,
+- submits add-user requests through BFF routes.
+
+## `src/app/admin/dataSourceConfig.tsx`
+
+Data source configuration view.
+
+Responsibilities:
+
+- displays available data sources,
+- supports enabling/disabling or configuring data-source metadata,
+- refreshes cached data source information after changes when needed.
+
+## Admin BFF Routes
+
+Important files:
+
+- `src/app/api/bff/admin/users/route.ts`
+- `src/app/api/bff/admin/users/add/route.ts`
+- `src/app/api/bff/admin/users/update/route.ts`
+- `src/app/api/bff/admin/users/delete/route.ts`
+- `src/app/api/bff/admin/userinfo/route.ts`
+- `src/app/api/bff/admin/persona/route.ts`
+- `src/app/api/bff/admin/dataSource/route.ts`
+- `src/app/api/bff/admin/query/route.ts`
+
+Responsibilities:
+
+- proxy admin operations to the backend,
+- preserve auth behavior through BFF/middleware,
+- normalize backend responses for admin UI components.
+
+## Related Shared Components
+
+Admin screens use shared UI primitives from:
+
+- `src/components/base/buttons`
+- `src/components/base/input`
+- `src/components/base/dropdown`
+- `src/components/base/select`
+- `src/components/base/form`
+- `src/components/application/tabs`
+- `src/components/application/modals`
+
+# App Shell
+
+The app shell is the frame around every page. It owns global CSS, font setup, provider composition, error handling, authenticated layout, and navigation.
+
+## `src/app/layout.tsx`
+
+Root server component for the entire application.
+
+Responsibilities:
+
+- imports global styles and GSK component library CSS,
+- loads the local GSK font through `next/font/local`,
+- calls `getCurrentUser()` from `src/lib/authServer.ts` before rendering,
+- wraps all pages with `ErrorBoundary`,
+- passes the initial user into `AppProvider`,
+- renders all page content inside `AuthenticatedLayout`.
+
+Why it matters:
+
+- The first render can know the current user from server-side cookie/backend checks.
+- Authenticated and unauthenticated routes share one consistent wrapper.
+
+## `src/providers/AppProvider.tsx`
+
+Client provider composition layer.
+
+Responsibilities:
+
+- mounts `AuthProvider`,
+- mounts `QueryCacheProvider`,
+- mounts the global `react-hot-toast` toaster,
+- passes through page children.
+
+Keep this file small. Add global providers here only when they must wrap most or all pages.
+
+## `src/components/layout/AuthenticatedLayout.tsx`
+
+Decides whether the page should use the authenticated sidebar layout.
+
+Responsibilities:
+
+- reads `isAuthenticated` from `AuthContext`,
+- checks the current pathname,
+- hides the sidebar for login, auth callback, unauthorized, and not-registered routes,
+- wraps authenticated pages with `SidebarNavigationProvider`,
+- renders `SideNavBar` next to the main content area.
+
+Key behavior:
+
+- Unauthenticated pages render as full-screen content.
+- Authenticated pages render as a two-column shell: sidebar plus scrollable main content.
+
+## `src/components/layout/sidenavbar/SideNavBar.tsx`
+
+Main authenticated navigation.
+
+Responsibilities:
+
+- renders the sidebar navigation used after login,
+- works inside `SidebarNavigationProvider`,
+- connects navigation state to GSK component library sidebar behavior.
+
+Related files:
+
+- `src/components/layout/sidenavbar/ChatHistoryDropdown.tsx`
+- `src/components/application/app-navigation/*`
+
+## `src/components/error/ErrorBoundary.tsx`
+
+Client-side error boundary for rendering failures below the root layout.
+
+Responsibilities:
+
+- catches React rendering errors in child components,
+- prevents the entire app from collapsing into an unhandled client error,
+- displays a controlled error state.
+
+## Styling Entry Points
+
+Important style files:
+
+- `src/app/globals.css`
+- `src/globals.css`
+- `src/styles/globals.css`
+- `src/theme.css`
+- `src/typography.css`
+- `public/assets/gsk_font.ttf`
+- `@gsk-tech/component-library-web/styles/globals.css`
+
+The codebase has a few global/theme CSS entry points. When changing global styles, check imports first so the change lands in the file actually used by the route or component.
+
+# Auth And Session
+
+Authentication is split between middleware protection, browser Silent SSO, backend token validation, and React auth state.
+
+## `src/proxy.ts`
+
+Request gate for most pages and BFF routes.
+
+Responsibilities:
+
+- applies security headers and per-request CSP nonce,
+- blocks selected suspicious request patterns,
+- skips public auth/login routes,
+- rate-limits by client IP,
+- checks `access_token` cookie or bearer token,
+- rejects malformed or expired JWTs,
+- redirects page requests to `/login`,
+- returns JSON `401` for BFF/API requests.
+
+This file protects route access before App Router rendering begins.
+
+## `src/context/AuthContext.tsx`
+
+Client auth state provider.
+
+Responsibilities:
+
+- stores `user`, `loading`, `isAuthenticated`, and `apiMessage`,
+- hydrates from the server-provided `initialUser`,
+- refreshes the current user on route change,
+- checks session validity when the tab becomes visible,
+- checks session validity after user inactivity,
+- redirects to `/login` when the session cookie is confirmed missing.
+
+Consumers use `useAuth()` to read auth state.
+
+## `src/lib/authServer.ts`
+
+Server-side current-user lookup.
+
+Responsibilities:
+
+- reads the access token through `getAccessToken()`,
+- calls `${BACKEND_URL}/api/auth/me`,
+- maps backend auth failures to `null`,
+- uses React `cache()` to deduplicate repeated calls during one server render.
+
+This is used by the root layout to provide the initial user.
+
+## `src/lib/authClient.ts`
+
+Client-side current-user lookup.
+
+Responsibilities:
+
+- resolves access token and Kong URL through chat server actions,
+- calls either `${kongUrl}/bff/auth/me` or `/api/bff/auth/me`,
+- returns the browser-side `User` object.
+
+This is used by `AuthContext` after the app is running in the browser.
+
+## Silent SSO Components
+
+Important files:
+
+- `src/components/silentSso/LoginSilentSso.tsx`
+- `src/components/silentSso/LogoutSilentSso.tsx`
+- `src/lib/silentSso/oidcClient.ts`
+- `src/lib/silentSso/authService.ts`
+- `src/lib/silentSso/tokenRefresh.ts`
+- `src/lib/silentSso/tokenRefreshManager.ts`
+- `src/lib/silentSso/apiClient.ts`
+
+Responsibilities:
+
+- initialize the Ping OIDC client in the browser,
+- start login/logout flows,
+- process token refresh behavior,
+- expose auth utilities to login/callback pages.
+
+## Login And Callback Pages
+
+Important files:
+
+- `src/app/login/page.tsx`
+- `src/app/login/LoginPageClient.tsx`
+- `src/app/auth/callback/page.tsx`
+- `src/app/api/bff/auth/callback/route.ts`
+
+Flow:
+
+1. Login page starts Ping authorization.
+2. Ping redirects back with `code` and `state`.
+3. BFF callback GET redirects to the React callback page.
+4. Browser OIDC SDK exchanges code for tokens.
+5. Callback page posts tokens to BFF callback POST.
+6. BFF sends tokens to backend validation.
+7. Backend returns secure cookies.
+8. BFF copies cookies to the browser response.
+
+## Token Helpers
+
+`src/lib/token.ts` handles server-side token work:
+
+- reads the `access_token` httpOnly cookie,
+- strips surrounding quotes when needed,
+- decrypts Fernet-encrypted tokens using `jwt-secret` from Key Vault,
+- decodes JWT payloads when local claim extraction is needed.
+
+Do not import this helper into client components.
+
+# BFF Helpers
+
+BFF helpers centralize how browser/client code talks to same-origin route handlers, Kong, the Python backend, and external services.
+
+## `src/lib/apiClient.ts`
+
+Browser JSON fetch wrapper.
+
+Responsibilities:
+
+- sends JSON requests with `credentials: 'include'`,
+- handles common auth and API status codes,
+- returns parsed JSON,
+- throws useful errors for UI code.
+
+Use this for ordinary client-side calls to BFF routes.
+
+## `src/lib/backendFetch.ts`
+
+Server-side backend fetch wrapper.
+
+Responsibilities:
+
+- calls backend `fetch()`,
+- captures backend `Set-Cookie` headers,
+- exposes `applyBackendCookies(nextRes)`,
+- preserves refreshed/rotated backend cookies in the browser response.
+
+Use this in route handlers when the backend may update auth cookies.
+
+## `src/lib/keyVault.ts`
+
+Server-side secret loader.
+
+Responsibilities:
+
+- authenticates with Azure using `DefaultAzureCredential`,
+- connects to `AZURE_KEY_VAULT_URL`,
+- fetches named secrets,
+- caches secrets in memory for 24 hours.
+
+Use this only from server components, route handlers, server actions, or `server-only` modules.
+
+## `src/app/actions/getOAuthConfig.ts`
+
+Server action for browser OAuth config.
+
+Responsibilities:
+
+- fetches Ping OAuth values from Key Vault,
+- falls back to `NEXT_PUBLIC_*` environment variables,
+- exposes only browser-safe OAuth configuration to client code.
+
+## Chat URL Server Actions
+
+Important files:
+
+- `src/app/chat/[id]/actions.ts`
+- `src/app/chat-stream/[id]/actions.ts`
+
+Responsibilities:
+
+- resolve GenAI backend URL from `backend-genai-url` or env fallback,
+- resolve Kong gateway URL from `kong-gateway-url` or `KONG_URL`,
+- resolve current access token for authenticated client calls.
+
+## `src/lib/db.ts`
+
+SQL Server pool helper.
+
+Responsibilities:
+
+- fetches SQL connection secrets from Key Vault,
+- creates a singleton `mssql` connection pool,
+- configures encrypted SQL Server connections.
+
+This is server-only and should not be imported into client components.
+
+## `src/lib/graphToken.ts`
+
+Microsoft Graph token helper.
+
+Responsibilities:
+
+- fetches tenant/client credentials from Key Vault,
+- requests a Microsoft Graph access token using client credentials,
+- caches the token until near expiry.
+
+## Route Handler Pattern
+
+Most BFF route handlers follow this pattern:
+
+1. Read request body/query params/cookies.
+2. Validate required inputs.
+3. Resolve backend URL or secret-backed endpoint.
+4. Call backend or external service.
+5. Map backend failures to browser-safe status codes.
+6. Return `NextResponse.json(...)`.
+7. Copy backend cookies when relevant.
+
+Keeping this pattern consistent makes the BFF layer easier to reason about and safer to extend.
+
+# Chat Experience
+
+The chat experience contains the conversation pages, chat input footers, streamed message rendering, and server actions that resolve backend endpoints.
+
+## Chat Routes
+
+Important files:
+
+- `src/app/chat/[id]/page.tsx`
+- `src/app/chat/[id]/layout.tsx`
+- `src/app/chat/[id]/footer.tsx`
+- `src/app/chat/[id]/actions.ts`
+
+The `[id]` segment represents a conversation identifier.
+
+Responsibilities:
+
+- render conversation content,
+- provide the chat footer/input controls,
+- call server actions to resolve access token and backend/Kong URLs,
+- interact with BFF chat endpoints for generation, history, status, search, and conversation details.
+
+## Streaming Chat Routes
+
+Important files:
+
+- `src/app/chat-stream/[id]/page.tsx`
+- `src/app/chat-stream/[id]/layout.tsx`
+- `src/app/chat-stream/[id]/footer.tsx`
+- `src/app/chat-stream/[id]/actions.ts`
+
+These mirror the standard chat route shape but are intended for streamed responses.
+
+## `src/components/chat/StreamedAgentMessage.tsx`
+
+Agent message renderer.
+
+Responsibilities:
+
+- renders generated answer content,
+- handles streamed/agent message display,
+- supports rich text/markdown style output expected from GenAI responses.
+
+## `src/components/chat/search-filters-tooltip.tsx`
+
+Filter explanation component.
+
+Responsibilities:
+
+- displays selected search filters in a compact tooltip,
+- helps users understand which filters shaped a chat/search result.
+
+## Chat Server Actions
+
+Important files:
+
+- `src/app/chat/[id]/actions.ts`
+- `src/app/chat-stream/[id]/actions.ts`
+
+Responsibilities:
+
+- resolve `backend-genai-url` from Key Vault or public env fallback,
+- resolve `kong-gateway-url` from Key Vault or `KONG_URL`,
+- expose access token information needed by client chat calls.
+
+These server actions keep secret-backed configuration out of client bundles.
+
+## Chat BFF Routes
+
+Important files:
+
+- `src/app/api/bff/chat/route.ts`
+- `src/app/api/bff/chat/conversation/route.ts`
+- `src/app/api/bff/chat/history/route.ts`
+- `src/app/api/bff/chat/search/route.ts`
+- `src/app/api/bff/chat/status/route.ts`
+
+Responsibilities:
+
+- proxy chat requests to backend/GenAI services,
+- fetch chat history and conversation records,
+- run search operations,
+- expose status endpoints,
+- normalize timeout/error behavior for the UI.
+
+`src/app/api/bff/chat/route.ts` includes a long timeout and returns a graceful fallback response when generation takes too long.
+
+## Rich Text Helpers
+
+The text editor under `src/components/base/text-editor/*` is available for rich text editing needs:
+
+- editor shell,
+- toolbar,
+- tooltip,
+- extensions,
+- character count,
+- editor buttons.
+
+Chat output also relies on markdown-related dependencies such as `react-markdown`, `remark-gfm`, and `rehype-external-links`.
+
+# Home Experience
+
+The home experience is the authenticated landing page where users start patient insight queries and choose filters.
+
+## `src/app/page.tsx`
+
+Top-level home route.
+
+Responsibilities:
+
+- renders the authenticated landing experience,
+- passes user-facing data into `HomeClient`,
+- relies on the root layout and providers for auth/session state.
+
+## `src/components/home/HomeClient.tsx`
+
+Main home page client component.
+
+Responsibilities:
+
+- renders the Patient+ greeting and brand mark,
+- owns the current prompt text,
+- controls suggested-question visibility,
+- renders `RefineSearch`,
+- renders `SuggestQuestion`,
+- reads cached suggested questions from `QueryCacheContext`,
+- links to related Patient Journey and Patient Panels experiences.
+
+Key state:
+
+- `userPrompt`,
+- `canSend`,
+- greeting based on local time,
+- whether suggestions are visible.
+
+## `src/components/home/RefineSearch.tsx`
+
+Prompt input and query refinement entry point.
+
+Responsibilities:
+
+- captures the user question,
+- coordinates filter/refinement controls,
+- enables or disables sending,
+- uses cached metadata such as disease area, geography, age group, time period, and data source options.
+
+This is the main bridge between the landing page and chat/query creation.
+
+## `src/components/home/SuggestQuestion.tsx`
+
+Suggested prompt display.
+
+Responsibilities:
+
+- renders suggested questions from cached query metadata,
+- lets the user insert a suggestion into the prompt,
+- coordinates with `RefineSearch` through setter props and refs.
+
+## `src/components/home/ChatHistory.tsx`
+
+Home-page chat history component.
+
+Responsibilities:
+
+- displays prior user conversations when available,
+- helps users resume an existing chat flow.
+
+Related BFF route:
+
+- `src/app/api/bff/chat/history/route.ts`
+
+## `src/context/QueryCacheContext.tsx`
+
+Shared query metadata cache.
+
+Responsibilities:
+
+- waits for auth before fetching metadata,
+- reads/writes `sessionStorage` under `query_cache_v1`,
+- fetches suggested questions,
+- fetches disease areas, age groups, time periods, data sources, field descriptions, and geography,
+- normalizes flat geography records into region/country structures,
+- exposes `refreshDataSources()`.
+
+This context prevents repeated reference-data calls as users navigate around the app.
+
+## Supporting Filter Components
+
+Important files:
+
+- `src/components/layout/components/MultiSelect.tsx`
+- `src/components/layout/components/NestedMultiSelect.tsx`
+- `src/components/chat/search-filters-tooltip.tsx`
+
+These components render and explain filter selections used by the home/search/chat flow.
+
+# Core Components
+
+This section describes the main frontend components and helper modules that shape the Patient+ user experience.
+
+## Files
+
+- [App Shell](./app-shell.md): root layout, providers, authenticated layout, navigation, and global styling.
+- [Auth And Session](./auth-and-session.md): auth context, Silent SSO components, callback flow, and token/session helpers.
+- [Home Experience](./home-experience.md): home page components, query metadata cache, filters, and suggested questions.
+- [Chat Experience](./chat-experience.md): chat routes, chat components, footers, server actions, and GenAI/BFF calls.
+- [Admin Experience](./admin-experience.md): admin page, tabs, tables, modals, and admin BFF routes.
+- [BFF Helpers](./bff-helpers.md): API clients, backend fetch wrapper, Key Vault-backed server actions, and route patterns.
+- [Shared UI Primitives](./shared-ui-primitives.md): reusable base/application/foundation components and when to use them.
+
+## How To Read These Notes
+
+Start with App Shell and Auth And Session. Those two explain the runtime wrapper that nearly every page lives inside.
+Then read Home Experience or Chat Experience depending on the user workflow you are tracing.
+
+# Shared UI Primitives
+
+Shared UI primitives live mostly under `src/components/base`, `src/components/application`, and `src/components/foundations`.
+
+## `src/components/base`
+
+General reusable UI controls.
+
+Key folders:
+
+- `avatar`: profile images, avatar groups, online indicators.
+- `badges`: status badges and badge groups.
+- `buttons`: primary buttons, utility buttons, close buttons, social buttons.
+- `button-group`: grouped button controls.
+- `checkbox`: checkbox control.
+- `dropdown`: dropdown menu components.
+- `file-upload-trigger`: file upload trigger control.
+- `form`: form wrappers and React Hook Form integration.
+- `input`: labels, hints, grouped inputs, payment input.
+- `pin-input`: OTP/PIN input.
+- `progress-indicators`: progress circles and loading indicators.
+- `radio-buttons` and `radio-groups`: radio/selectable option controls.
+- `select`: native select, custom select, combobox, multi-select, popover.
+- `slider`: slider control.
+- `tags`: tags and tag close/checkbox subcomponents.
+- `text-editor`: Tiptap-based rich text editor pieces.
+- `textarea`: textarea control.
+- `toggle`: toggle switch.
+- `tooltip`: tooltip control.
+- `video-player`: video player and icons.
+
+Use these components for reusable UI. Keep business-specific behavior in page or domain components.
+
+## `src/components/application`
+
+Higher-level app components built from base primitives.
+
+Key folders:
+
+- `app-navigation`: sidebar/mobile navigation components and navigation config.
+- `loading-indicator`: application loading state.
+- `modals`: modal shell.
+- `tabs`: tab components.
+
+Use these when building application-level surfaces rather than low-level controls.
+
+## `src/components/foundations`
+
+Low-level visual assets and foundational pieces.
+
+Key folders:
+
+- `logo`: logo components.
+- `featured-icon`: highlighted icon presentation.
+- `payment-icons`: imported template icons retained in the component library area.
+- `dot-icon.tsx`: small indicator icon.
+
+Some foundation assets may be inherited from the UI kit and not all are domain-specific to Patient+.
+
+## Utilities Used By UI
+
+Important files:
+
+- `src/utils/cx.ts`: class name composition/merge helper.
+- `src/utils/is-react-component.ts`: detects whether a value is a React component.
+- `src/hooks/use-breakpoint.ts`: responsive breakpoint hook.
+- `src/hooks/use-resize-observer.ts`: resize observer hook.
+- `src/use-resize-observer.ts`: root-level resize observer helper.
+
+## Styling Guidance
+
+The component layer uses a mixture of:
+
+- Tailwind utility classes,
+- GSK component library styles,
+- local CSS/theme files,
+- icon packages such as `@untitledui/icons`, `@gsk-tech/icons-web`, and `react-icons`.
+
+When adding UI, prefer existing base/application components first. Add a new primitive only when the behavior is reusable across more than one feature area.

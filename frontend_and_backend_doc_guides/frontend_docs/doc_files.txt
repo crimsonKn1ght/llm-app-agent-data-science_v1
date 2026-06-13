@@ -1,0 +1,531 @@
+# Runtime And Auth Flow
+
+## Root Runtime Composition
+
+`src/app/layout.tsx` is the root server component. It calls `getCurrentUser()` from `src/lib/authServer.ts`, then renders:
+
+```text
+ErrorBoundary
+  AppProvider
+    AuthenticatedLayout
+      page content
+```
+
+`src/providers/AppProvider.tsx` composes:
+
+- `AuthProvider` from `src/context/AuthContext.tsx`,
+- `QueryCacheProvider` from `src/context/QueryCacheContext.tsx`,
+- the global `react-hot-toast` toaster.
+
+## Middleware / Proxy
+
+`src/proxy.ts` is the request gate for pages and BFF routes, excluding static Next.js/public assets.
+
+It is responsible for:
+
+- applying HSTS, CSP, frame, content-type, referrer, and permissions headers,
+- generating a per-request CSP nonce,
+- blocking selected suspicious request shapes,
+- rate limiting by client IP,
+- allowing public auth/login routes,
+- validating `access_token` cookie or bearer token shape and expiry,
+- redirecting page users to `/login` or returning JSON `401` for BFF/API requests.
+
+The same security header set is also configured in `next.config.ts` so responses outside the proxy path still receive baseline headers.
+
+## Silent SSO Flow
+
+The app uses Ping Identity OIDC SDK on the client side.
+
+Important files:
+
+- `src/lib/silentSso/oidcClient.ts`: creates the browser OIDC client.
+- `src/components/silentSso/LoginSilentSso.tsx`: login trigger.
+- `src/components/silentSso/LogoutSilentSso.tsx`: logout trigger.
+- `src/app/login/LoginPageClient.tsx`: login page client flow.
+- `src/app/auth/callback/page.tsx`: browser callback page that completes OIDC processing.
+- `src/app/api/bff/auth/callback/route.ts`: server route that redirects GET callbacks and accepts POSTed tokens.
+- `src/app/actions/getOAuthConfig.ts`: server action that resolves OAuth configuration from Key Vault with env fallbacks.
+
+High-level login sequence:
+
+1. User lands on `/login`.
+2. Browser OIDC client starts authorization with Ping.
+3. Ping redirects back with `code` and `state`.
+4. `/api/bff/auth/callback` GET redirects to `/auth/callback` so the React callback page can run with normal CSP handling.
+5. Client-side OIDC SDK exchanges code for tokens.
+6. Client posts tokens to `/api/bff/auth/callback`.
+7. The BFF sends tokens to `${BACKEND_URL}/api/auth/validate_token`.
+8. Backend validates user status and returns secure cookies.
+9. The BFF copies backend `Set-Cookie` headers onto the browser response.
+
+## Auth State
+
+`src/context/AuthContext.tsx` stores:
+
+- `user`,
+- `loading`,
+- `isAuthenticated`,
+- `apiMessage`.
+
+It also checks session validity when:
+
+- routes change,
+- the tab becomes visible again,
+- the user returns after inactivity.
+
+Unauthenticated routes skip these checks: `/login`, `/auth/callback`, and `/not-registered`.
+
+## Query Metadata Cache
+
+`src/context/QueryCacheContext.tsx` loads common filter/reference data after auth is confirmed:
+
+- disease areas,
+- time periods,
+- age groups,
+- data sources,
+- geography hierarchy,
+- suggested questions,
+- field descriptions,
+- prompt metadata placeholders.
+
+It stores data in `sessionStorage` under `query_cache_v1`, so a user does not refetch the same metadata repeatedly within a browser tab session.
+
+# Patient+ Frontend Documentation
+
+This folder explains how the Patient+ LLM frontend is structured and where the main responsibilities live.
+
+## Documents
+
+- [Architecture Overview](./architecture-overview.md): high-level application shape, folder map, and request flow.
+- [Runtime And Auth Flow](./runtime-and-auth-flow.md): layout/providers, middleware, Silent SSO, and session handling.
+- [BFF And API Routes](./bff-and-api-routes.md): how frontend API routes proxy backend, GenAI, admin, query, auth, and AI helper calls.
+- [Components And Helpers](./components-and-helpers.md): core UI, contexts, hooks, utilities, and shared component areas.
+- [Key Vault And Configuration](./key-vault-and-configuration.md): Azure Key Vault imports, secret consumers, public/private config, and deployment identity.
+- [Build And Deployment](./build-and-deployment.md): Next.js build mode, Docker/Kubernetes, runtime env injection, and CI/CD assets.
+
+## Core Component Notes
+
+Detailed component notes live under [core-components](./core-components/README.md).
+
+- [App Shell](./core-components/app-shell.md)
+- [Auth And Session](./core-components/auth-and-session.md)
+- [Home Experience](./core-components/home-experience.md)
+- [Chat Experience](./core-components/chat-experience.md)
+- [Admin Experience](./core-components/admin-experience.md)
+- [BFF Helpers](./core-components/bff-helpers.md)
+- [Shared UI Primitives](./core-components/shared-ui-primitives.md)
+
+## Quick Mental Model
+
+This is a Next.js App Router frontend. Browser pages render under `src/app`, reusable UI lives under `src/components`, global client state lives under `src/context` and `src/providers`, and server-only integration helpers live under `src/lib`.
+
+The app uses a BFF pattern: client UI generally calls `/api/bff/*` routes or Kong BFF URLs. These Next.js route handlers validate/session-wrap requests, call the Python/FastAPI backend or external services, and return browser-safe responses. Sensitive secrets are not imported into client components; they are fetched server-side from Azure Key Vault through `src/lib/keyVault.ts`.
+
+# Key Vault And Configuration
+
+## Role Of Key Vault
+
+Sensitive runtime configuration is retrieved server-side from Azure Key Vault. Client components should not import Key Vault helpers directly.
+
+The central helper is `src/lib/keyVault.ts`.
+
+It:
+
+- creates a singleton Azure `SecretClient`,
+- authenticates with `DefaultAzureCredential`,
+- reads the vault URL from `AZURE_KEY_VAULT_URL`,
+- caches secrets in memory for 24 hours,
+- evicts least-recently-used entries after 100 cached secrets.
+
+## Authentication To Azure
+
+In Kubernetes, `linked_services/devops/k8s/deployment-patientplus-fe.yaml` enables Azure Workload Identity:
+
+- pod label: `azure.workload.identity/use: "true"`,
+- configured service account,
+- projected token mounted at `/var/run/secrets/azure/tokens`,
+- Azure identity env vars injected by the workload identity webhook.
+
+Because `DefaultAzureCredential` is used, the same code can also work locally if a developer has an Azure identity available through supported Azure SDK mechanisms.
+
+## Current Secret Consumers
+
+| File | Secret names | Purpose |
+| --- | --- | --- |
+| `src/app/actions/getOAuthConfig.ts` | `ping-oauth-client-id-silent`, `ping-oauth-authorization-url`, `ping-oauth-token-url` | Resolve browser OAuth configuration with env fallbacks. |
+| `src/app/api/bff/oauth/token/route.ts` | `ping-oauth-token-url` | Exchange OAuth authorization code for tokens. |
+| `src/app/api/bff/auth/refresh/route.ts` | `ping-oauth-token-url`, `ping-oauth-client-id-silent` | Refresh auth tokens. |
+| `src/app/api/bff/ai/enhancer/route.ts` | `gemini-endpoint` | Call AI query enhancement service. |
+| `src/app/api/bff/ai/rephraser/route.ts` | `gemini-endpoint` | Call AI query rephrasing service. |
+| `src/app/chat/[id]/actions.ts` | `backend-genai-url`, `kong-gateway-url` | Resolve backend/Kong URLs for chat. |
+| `src/app/chat-stream/[id]/actions.ts` | `backend-genai-url`, `kong-gateway-url` | Resolve backend/Kong URLs for streaming chat. |
+| `src/lib/token.ts` | `jwt-secret` | Derive Fernet-compatible token decryption key. |
+| `src/lib/db.ts` | `sql-user`, `sql-pwd`, `sql-server`, `sqldb-name` | Build SQL Server connection pool. |
+| `src/lib/graphToken.ts` | `azure-tenant-id`, `adls-client-id`, `adls-client-secret` | Fetch Microsoft Graph access token with client credentials. |
+
+## Public Vs Private Configuration
+
+Use private server-only configuration for secrets and backend credentials:
+
+- Key Vault secrets through `getSecret(...)`,
+- non-`NEXT_PUBLIC_*` environment variables such as `BACKEND_URL`, `BACKEND_GENAI_URL`, `KONG_URL`, `NEXTAUTH_URL`, `AZURE_KEY_VAULT_URL`.
+
+Use `NEXT_PUBLIC_*` only for values safe to expose in browser JavaScript:
+
+- `NEXT_PUBLIC_APP_URL`,
+- `NEXT_PUBLIC_PING_CLIENT_ID`,
+- `NEXT_PUBLIC_PING_SCOPE`,
+- `NEXT_PUBLIC_AUTHORIZATION_ENDPOINT`,
+- `NEXT_PUBLIC_TOKEN_ENDPOINT`,
+- `NEXT_PUBLIC_BACKEND_URL`,
+- other browser-required feature/config values.
+
+Important: anything prefixed with `NEXT_PUBLIC_` is bundled into client-side JavaScript at build time unless replaced through runtime placeholder injection.
+
+## Runtime Fallback Pattern
+
+Several modules follow this shape:
+
+```ts
+const value =
+  (await getSecret('some-secret').catch(() => null)) ||
+  process.env.SOME_ENV_FALLBACK ||
+  "";
+```
+
+This lets production use Key Vault while local development can use environment variables.
+
+## Token Handling
+
+`src/lib/token.ts` reads the `access_token` httpOnly cookie on the server. It can also decrypt a Fernet-encrypted token using `jwt-secret` from Key Vault.
+
+The implementation mirrors the backend Fernet derivation:
+
+1. Read `jwt-secret`.
+2. Hash with SHA-256.
+3. Split the resulting 32 bytes into signing and encryption key halves.
+4. Verify Fernet HMAC.
+5. Decrypt AES-128-CBC ciphertext.
+
+## Practical Guidance
+
+- Keep `getSecret()` usage inside server components, route handlers, server actions, or `server-only` modules.
+- Do not pass raw secrets into client components.
+- Prefer Key Vault for production secrets and env fallbacks for local development.
+- When adding a new secret, update this document with the secret name and consumer.
+
+# Components And Helpers
+
+## Component Areas
+
+```text
+src/components/
+  application/  Higher-level application widgets such as navigation, modals, tabs
+  base/         Reusable UI primitives: buttons, inputs, selects, dropdowns, tags, editor
+  chat/         Chat rendering and chat-specific helpers
+  error/        Error boundary
+  foundations/  Icons, logos, and low-level visual building blocks
+  home/         Home page search, suggestions, history, and logo components
+  layout/       Authenticated layout, navbar, sidebar, nested filters
+  silentSso/    Login/logout SSO helper components
+```
+
+## Layout Components
+
+- `src/components/layout/AuthenticatedLayout.tsx` decides whether to show the authenticated sidebar layout.
+- `src/components/layout/sidenavbar/SideNavBar.tsx` renders the app navigation.
+- `src/components/layout/header/Navbar.tsx` and `photoActions.ts` support user/header interactions.
+- `src/components/layout/components/MultiSelect.tsx` and `NestedMultiSelect.tsx` support filter selection UIs.
+
+Unauthenticated pages such as login and callback routes render full width without the sidebar.
+
+## Home Components
+
+- `HomeClient.tsx`: main landing/search experience after login.
+- `RefineSearch.tsx`: user prompt input and filtering controls.
+- `SuggestQuestion.tsx`: suggested question display.
+- `ChatHistory.tsx`: previous chats.
+- `AnimatedLogo.tsx`: branded visual.
+
+`HomeClient` consumes cached metadata from `QueryCacheContext`.
+
+## Chat Components
+
+- `src/components/chat/StreamedAgentMessage.tsx`: renders streamed/agent chat content.
+- `src/components/chat/search-filters-tooltip.tsx`: explains selected filters in the chat/search flow.
+
+Chat pages under `src/app/chat/[id]` and `src/app/chat-stream/[id]` combine these components with route-local footers and server actions.
+
+## Base Components
+
+The `src/components/base` folder contains general UI primitives such as:
+
+- avatar,
+- badges,
+- buttons,
+- checkbox,
+- dropdown,
+- form,
+- input,
+- pin input,
+- radio buttons/groups,
+- select/multi-select/combobox,
+- slider,
+- tags,
+- text editor,
+- textarea,
+- toggle,
+- tooltip,
+- video player.
+
+These components are shared building blocks and should stay business-domain-light.
+
+## Contexts
+
+- `AuthContext`: owns browser auth state, route-change user refresh, and session checks.
+- `QueryCacheContext`: owns cached query/filter metadata and exposes refresh helpers.
+
+## Helpers
+
+Key helper modules in `src/lib`:
+
+- `keyVault.ts`: server-only Azure Key Vault secret fetch and cache.
+- `token.ts`: access token cookie reading, Fernet decrypt support, JWT payload extraction.
+- `authServer.ts`: server-side current-user lookup.
+- `authClient.ts`: client-side current-user lookup.
+- `backendFetch.ts`: backend fetch wrapper that preserves cookies.
+- `db.ts`: SQL Server pool using Key Vault secrets.
+- `graphToken.ts`: Microsoft Graph client-credentials token using Key Vault secrets.
+- `guards.ts`: backend-backed authorization helpers.
+- `rate-limiter.ts` and `authLimiter.ts`: request/auth throttling helpers.
+- `swagger.ts`: OpenAPI generation support.
+
+## Hooks And Utilities
+
+- `src/hooks/use-breakpoint.ts`: responsive breakpoint logic.
+- `src/hooks/use-resize-observer.ts`: resize measurement.
+- `src/hooks/use-speech-recognition.ts` and `use-speech-to-text.ts`: speech input support.
+- `src/utils/cx.ts`: class name merging.
+- `src/utils/is-react-component.ts`: component detection helper.
+
+# Build And Deployment
+
+## Local Commands
+
+Defined in `package.json`:
+
+```text
+npm run dev        Next.js dev server with Turbopack disabled
+npm run dev:turbo  Next.js dev server with Turbopack
+npm run build      Production Next.js build
+npm run start      Start production Next.js server
+npm run lint       ESLint
+npm run devc       Run custom server.js
+```
+
+## Next.js Build Settings
+
+`next.config.ts` configures:
+
+- `output: 'standalone'` for container deployment,
+- `outputFileTracingRoot` at the repository root,
+- React Compiler enabled,
+- Next powered-by header disabled,
+- GSK packages transpiled by Next,
+- security headers for all routes,
+- strict server action allowed origin handling.
+
+## Docker
+
+The main `Dockerfile` builds and runs the standalone Next.js app. `entrypoint.sh` logs key runtime variables and performs limited runtime replacement for selected `NEXT_PUBLIC_*` placeholders in built static JS files.
+
+Currently the runtime replacement targets:
+
+- `NEXT_PUBLIC_CRYPTO_PASSWORD`,
+- `NEXT_PUBLIC_CRYPTO_SALT`.
+
+This exists because `NEXT_PUBLIC_*` values are normally frozen into client bundles at build time.
+
+## Kubernetes
+
+`linked_services/devops/k8s/deployment-patientplus-fe.yaml` defines:
+
+- deployment: `patient-plus-frontend`,
+- two default replicas,
+- container port `3000`,
+- config loading from a ConfigMap,
+- Azure Workload Identity support,
+- `/tmp` and `.next/cache` writable volumes,
+- startup/readiness/liveness probes,
+- CPU/memory/ephemeral storage limits,
+- horizontal pod autoscaler,
+- cluster-internal service on port `80`.
+
+## CI/CD Assets
+
+Pipeline and variable files live under `linked_services/devops`:
+
+```text
+linked_services/devops/
+  pipeline/build/patientplus-frontend.yml
+  pipeline/deploy/patientplus-frontend.yml
+  variables/build/variables.yml
+  variables/deploy/core-deploy-variables.yml
+  variables/deploy/dev-deploy-variables.yml
+  variables/deploy/uat-deploy-variables.yml
+  variables/deploy/prod-deploy-variables.yml
+  k8s/deployment-patientplus-fe.yaml
+```
+
+Shared pipeline templates live under `linked_services/shared-components`.
+
+## Deployment-Time Configuration
+
+The Kubernetes deployment pulls most non-secret runtime settings from a ConfigMap. Secret material should remain in Azure Key Vault and be accessed by the running app through `DefaultAzureCredential`.
+
+The important environment values to verify per environment are:
+
+- `AZURE_KEY_VAULT_URL`,
+- `BACKEND_URL`,
+- `BACKEND_GENAI_URL` or Key Vault `backend-genai-url`,
+- `KONG_URL` or Key Vault `kong-gateway-url`,
+- `NEXTAUTH_URL`,
+- `NEXT_PUBLIC_APP_URL`,
+- Ping OAuth public endpoints or corresponding Key Vault secret names.
+
+# BFF And API Routes
+
+The BFF routes live under `src/app/api/bff`. They are Next.js route handlers that sit between browser UI and backend services.
+
+## Main Route Groups
+
+```text
+src/app/api/bff/
+  admin/      Admin user/persona/data-source/query operations
+  ai/         Prompt, enhancer, and rephraser helper routes
+  auth/       Login, callback, logout, refresh, me, check, photo
+  chat/       Chat generation, history, conversation, search, status
+  docs/       OpenAPI/Swagger documentation support
+  export-pdf/ PDF export endpoint
+  oauth/      OAuth token helper endpoint
+  query/      Query metadata such as disease area, geography, descriptions
+```
+
+## Backend Proxying
+
+Most BFF routes call the Python/FastAPI backend through `BACKEND_URL`, for example:
+
+- `/api/bff/auth/me` -> `${BACKEND_URL}/api/auth/me`
+- `/api/bff/auth/callback` -> `${BACKEND_URL}/api/auth/validate_token`
+- query/admin/chat routes -> `${BACKEND_URL}/api/...` or configured GenAI/Kong URLs
+
+Several routes default to `http://localhost:8000` for local development when `BACKEND_URL` is not set.
+
+## Cookie Propagation
+
+`src/lib/backendFetch.ts` wraps `fetch()` and captures backend `Set-Cookie` headers. Its `applyBackendCookies()` helper copies those cookies onto the `NextResponse` returned to the browser.
+
+Use this pattern when a backend call can refresh or rotate auth cookies.
+
+## Client API Helpers
+
+- `src/lib/apiClient.ts`: browser-friendly JSON fetch wrapper with standard error handling.
+- `src/lib/authClient.ts`: client-side `getCurrentUser()` helper that can call either Kong BFF or same-origin BFF routes.
+- `src/app/chat/[id]/actions.ts` and `src/app/chat-stream/[id]/actions.ts`: server actions that expose resolved access token and Kong/backend URLs to client components when needed.
+
+## Swagger Docs
+
+Many BFF route files include `@swagger` JSDoc annotations. `src/lib/swagger.ts` and `src/app/api-docs/*` are used to generate and render API docs.
+
+## AI Helper Routes
+
+The AI helper routes call configured services using secrets:
+
+- `src/app/api/bff/ai/enhancer/route.ts`
+- `src/app/api/bff/ai/rephraser/route.ts`
+- `src/app/api/bff/ai/prompt/[promptName]/route.ts`
+
+The enhancer and rephraser routes use `getSecret('gemini-endpoint')` to avoid exposing the endpoint in client bundles.
+
+## Chat Routes
+
+`src/app/api/bff/chat/route.ts` proxies chat generation to a configured GenAI endpoint and includes a long timeout with a graceful fallback response.
+
+Related routes manage:
+
+- conversation history,
+- conversation details,
+- chat search,
+- chat status.
+
+Some chat components may use Kong BFF URLs if `resolveKongUrl()` returns one; otherwise they use same-origin `/api/bff/*` endpoints.
+
+# Architecture Overview
+
+## Stack
+
+- Next.js 16 App Router with React 19 and TypeScript.
+- Tailwind CSS 4 plus GSK component library styles.
+- Ping Identity OIDC SDK for browser-driven Silent SSO.
+- Azure Key Vault SDKs for server-side secret retrieval.
+- Next.js route handlers under `src/app/api/bff` as the frontend BFF layer.
+- Standalone Next.js output for container deployment.
+
+## Top-Level Layout
+
+```text
+src/
+  app/              App Router pages, layouts, server actions, and API route handlers
+  components/       UI components, layout components, base primitives, application widgets
+  context/          React context providers for auth and cached query metadata
+  hooks/            Reusable browser hooks
+  lib/              Server and client helper modules for auth, tokens, Key Vault, DB, APIs
+  providers/        Root app provider composition
+  styles/           Shared CSS/theme files
+  public/           Static assets, GSK fonts, logos, favicon
+  linked_services/  Azure DevOps, Kubernetes, and shared pipeline assets
+```
+
+## Application Entry
+
+The root app shell is `src/app/layout.tsx`.
+
+It:
+
+- loads global CSS and the GSK font,
+- calls `getCurrentUser()` from `src/lib/authServer.ts` on the server,
+- wraps the app in `ErrorBoundary`,
+- passes the initial user into `AppProvider`,
+- wraps rendered pages with `AuthenticatedLayout`.
+
+This means the first render already has server-side auth context when an `access_token` cookie is available.
+
+## Page Areas
+
+- `src/app/page.tsx` and `src/components/home/*`: home/search experience and suggested prompts.
+- `src/app/chat/[id]/*`: chat page, footer, and server actions for backend/Kong URL resolution.
+- `src/app/chat-stream/[id]/*`: streaming chat variant with similar action helpers.
+- `src/app/admin/*`: admin screens for users, personas, data sources, and table views.
+- `src/app/login/*` and `src/app/auth/callback/*`: Silent SSO login and callback UX.
+- `src/app/api-docs/*`: Swagger UI generated from route annotations.
+- `src/app/unauthorized`, `not-registered`, `not-found`, `global-error`: error and access-control pages.
+
+## Request Flow
+
+Typical authenticated page flow:
+
+1. Browser requests a page.
+2. `src/proxy.ts` runs first for most routes.
+3. Proxy applies security headers, rate limiting, and JWT cookie validation.
+4. `src/app/layout.tsx` fetches the current user from the backend.
+5. `AppProvider` initializes `AuthProvider` and `QueryCacheProvider`.
+6. Authenticated pages render inside the sidebar layout.
+7. Client components call `/api/bff/*` routes or Kong BFF URLs for backend data.
+
+## BFF Pattern
+
+The frontend deliberately avoids calling every backend service directly from the browser. Instead, most browser interactions go through either:
+
+- same-origin Next.js route handlers under `/api/bff/*`, or
+- a resolved Kong gateway URL when configured by server actions.
