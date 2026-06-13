@@ -1,0 +1,121 @@
+# Application Startup And Routing
+
+## Files
+
+```text
+main.py
+router_loader.py
+settings.py
+app/utils/setup.py
+```
+
+## Role In The Backend
+
+This component is the application shell. It creates the FastAPI app, defines startup and shutdown behavior, exposes public probe endpoints, applies middleware, discovers API routers, and configures CORS.
+
+The most important entry point is [main.py](../../main.py). When Uvicorn imports `main:app`, the module builds a `FastAPI` instance with a lifespan handler.
+
+## Startup Lifespan
+
+`lifespan(app)` runs when the app starts.
+
+Responsibilities:
+
+- Log startup.
+- Initialize the database connection through `BaseModelBuilder.init()`.
+- Fail startup if database or required Key Vault SQL secrets are unavailable.
+- Start a background prompt sync thread.
+- Start a background auth secret warm-up thread.
+- Close a database session during shutdown.
+
+The database initialization happens before the app accepts traffic. Prompt sync and auth secret warm-up run in daemon threads so health probes are not delayed by optional warm-up work.
+
+## Probe And Root Routes
+
+`main.py` registers these routes directly:
+
+```text
+GET /health
+GET /ready
+GET /healthcheck
+GET /api/health
+GET /api/ready
+GET /api/healthcheck
+GET /
+GET /secure
+```
+
+The `/api/*` health aliases exist for gateway paths where Kong or another upstream adds `/api` to the request path.
+
+These health routes are intentionally declared before auth middleware and are also listed as public path prefixes inside `auth_middleware`.
+
+## Middleware Order
+
+The app attaches auth middleware after the health endpoints:
+
+```python
+app.middleware("http")(auth_middleware)
+```
+
+Business routes are registered after that with:
+
+```python
+register_routes(app)
+```
+
+CORS middleware is then added using origins from `settings.URL_ALLOWED_ORIGINS`.
+
+Conceptually:
+
+```text
+Request
+  -> CORS / FastAPI middleware stack
+  -> auth_middleware for non-public paths
+  -> dynamically registered API route
+```
+
+## Dynamic Router Loading
+
+[router_loader.py](../../router_loader.py) scans for every `router.py` under `app/api`.
+
+For each file:
+
+1. Build a unique module name from the file path.
+2. Import the file dynamically.
+3. Read the module-level `router` object.
+4. Confirm it is an `APIRouter`.
+5. Mount it using the folder path below `app/api` as the URL prefix.
+
+Examples:
+
+```text
+app/api/auth/router.py        -> /api/auth
+app/api/chat/router.py        -> /api/chat
+app/api/admin/users/router.py -> /api/admin/users
+```
+
+If a router file cannot be imported, the loader prints an error and skips that file. This keeps the registration logic simple, but it also means import-time errors in route modules can hide routes until logs are checked.
+
+## Settings
+
+[settings.py](../../settings.py) defines the required non-secret settings:
+
+```text
+AZURE_KEY_VAULT_URL
+URL_ALLOWED_ORIGINS
+```
+
+The `.env` path comes from `ENV_FILE` in [app/utils/setup.py](../../app/utils/setup.py), which resolves the project root with `Path(__file__).resolve()`. This avoids current-working-directory issues when Uvicorn starts worker processes.
+
+## When To Touch This Component
+
+Change this component when you need to:
+
+- Add app-wide startup or shutdown behavior.
+- Change health/readiness behavior.
+- Add or reorder middleware.
+- Change how routes are discovered.
+- Add new global settings.
+- Adjust allowed CORS origins parsing.
+
+For a normal new endpoint, do not edit `main.py`; add a `router.py` under `app/api`.

@@ -1,0 +1,156 @@
+# Prompts And Chat History
+
+## Files
+
+```text
+prompts/*.prompt
+scripts/sync_prompts.py
+app/api/prompts/router.py
+app/models/prompt_template.py
+app/api/chat/router.py
+app/models/ai_gen_query.py
+app/models/ai_gen_query_conversations.py
+```
+
+## Role In The Backend
+
+This component supports the LLM-facing parts of the backend: reusable prompt templates and stored conversation history.
+
+The backend does not generate LLM responses in the files currently present. Instead, it exposes prompt templates and reads previously stored query/conversation records from SQL Server.
+
+## Prompt Files
+
+Prompt templates live under [prompts](../../prompts):
+
+```text
+query_enhancer.prompt
+rephraser_agent.prompt
+```
+
+The file stem becomes the prompt name. For example:
+
+```text
+prompts/query_enhancer.prompt -> query_enhancer
+```
+
+## Prompt Sync
+
+[scripts/sync_prompts.py](../../scripts/sync_prompts.py) syncs local `.prompt` files to the `app_prompt_templates` table.
+
+It runs in a background thread during app startup.
+
+Sync behavior:
+
+1. Find `*.prompt` files in the prompt directory.
+2. Read each file.
+3. Fetch the latest row for that prompt name from `app_prompt_templates`.
+4. Compare MD5 hashes of database text and file text.
+5. If unchanged, skip.
+6. If changed, deactivate prior rows for the prompt name.
+7. Insert a new row with incremented `prompt_version`.
+8. Commit all changes.
+
+This gives prompt files source-controlled visibility while keeping the active runtime prompt in SQL Server.
+
+## Prompt Lookup API
+
+[app/api/prompts/router.py](../../app/api/prompts/router.py) exposes:
+
+```text
+GET /api/prompts/{prompt_name}
+```
+
+The route:
+
+- Requires an authenticated user via `request.state.user_id`.
+- Calls `PromptTemplateBuilder().fetch_by_name(prompt_name)`.
+- Returns the active prompt or `404` when not found.
+
+## Prompt Database Model
+
+[app/models/prompt_template.py](../../app/models/prompt_template.py) maps:
+
+```text
+app_prompt_templates
+```
+
+Important fields:
+
+```text
+prompt_name
+prompt_text
+prompt_version
+is_active
+created_by
+created_date
+```
+
+`PromptTemplateBuilder.fetch_by_name()` returns the active prompt by name. `fetch_all_active()` returns all active prompts.
+
+## Chat API
+
+[app/api/chat/router.py](../../app/api/chat/router.py) exposes:
+
+```text
+GET /api/chat/history
+GET /api/chat/search
+GET /api/chat/status
+GET /api/chat/{parentConversationID}
+```
+
+💡
+Every route reads the authenticated user's MUD ID from `request.state.user_id`. If the middleware did not attach it, the route returns `401`.
+
+<!-- Lines 102-123 not captured in provided images -->
+
+## Chat Search
+
+`GET /api/chat/search?q=...` searches the user's questions and answers.
+
+The route calls:
+
+```text
+AiGenQueryConversationsBuilder.search(mudid, search_term, page, page_size)
+```
+
+The model file includes helper functions to extract snippets and shape search results.
+
+## Chat Status
+
+`GET /api/chat/status` expects:
+
+```text
+parentConversationID
+conversationID
+```
+
+The route validates both values as UUIDs before querying. It then calls:
+
+```text
+AiGenQueryConversationsBuilder.fetch_status(...)
+```
+
+This is useful when the frontend wants the processing status of a specific message.
+
+## Conversation Detail
+
+`GET /api/chat/{parentConversationID}` returns a paginated message thread.
+
+The route calls:
+
+```text
+AiGenQueryConversationsBuilder.fetch_by_parent_id(...)
+```
+
+The builder includes the authenticated MUD ID in the query so a user cannot fetch another user's conversation by guessing the parent ID.
+
+## When To Touch This Component
+
+Change this component when you need to:
+
+- Add or version prompt templates.
+- Change prompt sync behavior.
+- Add a new prompt retrieval endpoint.
+- Modify chat history response shape.
+- Add new conversation search filters.
+- Adjust pagination or ownership checks for chat records.

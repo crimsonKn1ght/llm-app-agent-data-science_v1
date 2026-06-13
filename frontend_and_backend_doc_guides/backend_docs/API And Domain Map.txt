@@ -1,0 +1,266 @@
+# API And Domain Map
+
+## Route Discovery
+
+Routes are not manually listed in `main.py`. [router_loader.py](../router_loader.py) discovers every `router.py` under `app/api` and mounts it using the folder path as the route prefix.
+
+```text
+app/api/auth/router.py          -> /api/auth
+app/api/admin/router.py         -> /api/admin
+app/api/admin/users/router.py   -> /api/admin/users
+app/api/query/router.py         -> /api/query
+app/api/chat/router.py          -> /api/chat
+app/api/prompts/router.py       -> /api/prompts
+```
+
+Each `router.py` must expose:
+
+```python
+router = APIRouter()
+```
+
+## Public Paths
+
+[app/middlewares/auth_middleware.py](../app/middlewares/auth_middleware.py) bypasses auth for paths with these prefixes:
+
+```text
+/healthcheck
+/health
+/ready
+/api/auth
+/docs
+/openapi.json
+```
+
+All other API routes expect a valid `access_token` cookie or `Authorization: Bearer <token>` header.
+
+## Authentication API
+
+File: [app/api/auth/router.py](../app/api/auth/router.py)
+
+Primary endpoints:
+
+```text
+POST /api/auth/oauth_verify
+GET  /api/auth/me
+POST /api/auth/validate_token
+GET  /api/auth/get_refresh_token
+GET  /api/auth/logout
+```
+
+Responsibilities:
+
+- Exchange PingFederate authorization code and PKCE verifier for tokens.
+- Validate that token subject (`sub`) maps to an active user.
+- Store refresh tokens in `uam_users_sessions`.
+- Set and clear auth cookies.
+- Return current user details with persona/geography information.
+- Support silent SSO token validation from the frontend.
+
+Related model/builders:
+
+```text
+UserBuilder
+UsersSessionsBuilder
+UsersPersonaGeography
+Persona
+Geography
+```
+
+## Admin API
+
+Files:
+
+- [app/api/admin/router.py](../app/api/admin/router.py)
+- [app/api/admin/users/router.py](../app/api/admin/users/router.py)
+
+Primary endpoints:
+
+```text
+POST /api/admin/addpersona
+GET  /api/admin/persona
+GET  /api/admin/geography
+GET  /api/admin/dataSourceConfigs
+POST /api/admin/configureDataSource
+
+POST /api/admin/users/add
+GET  /api/admin/users/
+GET  /api/admin/users/all
+PUT  /api/admin/users/update
+PUT  /api/admin/users/delete
+```
+
+Responsibilities:
+
+- Add and list personas.
+- List geographies.
+- Create, update, list, reactivate, and soft-delete users.
+- Manage user persona/geography assignments.
+- Read and configure data source to persona mappings.
+
+Related model/builders:
+
+```text
+UserBuilder
+PersonaBuilder
+GeographyBuilder
+DataSourceBuilder
+PersonaDataSourceBuilder
+UsersPersonaGeographyBuilder
+```
+
+## Query API
+
+File: [app/api/query/router.py](../app/api/query/router.py)
+
+Primary endpoints:
+
+```text
+GET /api/query/descriptions
+GET /api/query/{entity_type}
+```
+
+Supported entity types:
+
+```text
+data-source
+geography
+time-period
+disease-area
+age-group
+```
+
+Responsibilities:
+
+- Return field descriptions.
+- Return reference metadata for frontend filters.
+- For `data-source`, filter returned data sources based on the authenticated user's persona assignments.
+
+Related model/builders:
+
+```text
+FieldsDescriptionBuilder
+UsersPersonaGeographyBuilder
+PersonaDataSourceBuilder
+GeographyBuilder
+TimePeriodBuilder
+DiseaseAreaBuilder
+AgeGroupBuilder
+```
+
+Current code note: the route docstring mentions `persona`, but the active `entity_mapping` does not include a `persona` entity type.
+
+## Chat API
+
+File: [app/api/chat/router.py](../app/api/chat/router.py)
+
+Primary endpoints:
+
+```text
+GET /api/chat/history
+GET /api/chat/search?q=<term>
+GET /api/chat/status
+GET /api/chat/{parentConversationID}
+```
+
+Responsibilities:
+
+- Return paginated conversation history for the authenticated user.
+- Search a user's chat questions and answers.
+- Return message status by parent and conversation ID.
+- Return a paginated conversation thread.
+
+Related model/builders:
+
+```text
+AiGenQueryConversationsBuilder
+```
+
+The route derives ownership from `request.state.user_id`, then the builder methods include that MUD ID in queries so users only see their own conversations.
+
+## Prompt API
+
+File: [app/api/prompts/router.py](../app/api/prompts/router.py)
+
+Primary endpoint:
+
+```text
+GET /api/prompts/{prompt_name}
+```
+
+Responsibilities:
+
+- Fetch the active version of a prompt template by name.
+
+Related model/builders:
+
+```text
+PromptTemplateBuilder
+```
+
+Prompt files are synced into the database by [scripts/sync_prompts.py](../scripts/sync_prompts.py) during startup.
+
+## Model Groups
+
+### User And Access Control
+
+```text
+uam_users                   -> Users / UserBuilder
+uam_users_sessions          -> UsersSessions / UsersSessionsBuilder
+uam_users_persona_geography -> UsersPersonaGeography / UsersPersonaGeographyBuilder
+uam_persona                 -> Persona / PersonaBuilder
+uam_geography               -> Geography / GeographyBuilder
+uam_persona_data_source     -> PersonaDataSource / PersonaDataSourceBuilder
+uam_data_source             -> DataSource / DataSourceBuilder
+```
+
+These tables control who can access the app and what filters/data sources they are allowed to see.
+
+### Reference Metadata
+
+```text
+uam_age_group          -> AgeGroup / AgeGroupBuilder
+uam_disease_area       -> DiseaseArea / DiseaseAreaBuilder
+uam_time_period        -> TimePeriod / TimePeriodBuilder
+uam_fields_description -> FieldsDescription / FieldsDescriptionBuilder
+```
+
+These tables provide dropdown/filter metadata and field descriptions for the frontend.
+
+### LLM Conversation And Prompt Data
+
+```text
+ai_gen_query               -> AiGenQuery / AiGenQueryBuilder
+ai_gen_query_conversations -> AiGenQueryConversations / AiGenQueryConversationsBuilder
+app_prompt_templates       -> PromptTemplate / PromptTemplateBuilder
+```
+
+These tables store conversation records and active/versioned prompt templates.
+
+## Builder Pattern
+
+The repository commonly uses builder classes rather than directly querying in route handlers.
+
+Typical pattern:
+```python
+user = (
+    UserBuilder()
+    .builder()
+    .mud_id(payload.mud_id)
+    .name(payload.first_name, payload.last_name)
+    .email(payload.email)
+    .role_name(payload.role_name)
+    .created_by(user_id)
+    .insert()
+)
+```
+
+Builder classes centralize:
+
+- Session lifecycle through `BaseModelBuilder.session()`.
+- Query details.
+- Soft-delete filtering.
+- Response serialization.
+- Insert/update helper methods.
+
+Route handlers generally validate request/user context, call a builder method, and convert success/failure into HTTP responses.

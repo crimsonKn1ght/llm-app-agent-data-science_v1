@@ -1,0 +1,164 @@
+# Deployment And Operations
+
+## Runtime Image
+
+[Dockerfile](../Dockerfile) uses a two-stage Python 3.12 image:
+
+1. `builder`: installs Python dependencies into `/install`.
+2. `runtime`: installs Microsoft ODBC Driver 18, copies installed packages and app code, and runs Uvicorn.
+
+The container command is:
+
+```text
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+The app listens on port `8000`.
+
+## Kubernetes Deployment
+
+The AKS manifest is [linked_services/devops/k8s/deployment-patientplus-be.yaml](../linked_services/devops/k8s/deployment-patientplus-be.yaml).
+
+Key runtime features:
+
+- Deployment name: `patient-plus-backend`.
+- Container port: `8000`.
+- Replicas: `2`.
+- Service type: `ClusterIP`, exposing port `80` to target port `8000`.
+- Azure Workload Identity label: `azure.workload.identity/use: "true"`.
+- Service account is tokenized as `#{service_account_name}#`.
+- Config values are injected from a ConfigMap tokenized as `#{config_map_name}#`.
+- Read-only root filesystem.
+- Non-root container user.
+- `/tmp` writable volume through `emptyDir`.
+- Projected Azure identity token mounted at `/var/run/secrets/azure/tokens`.
+
+## Health Probes
+
+The Kubernetes manifest uses `/health` for all probe types:
+
+```text
+startupProbe   GET /health
+readinessProbe GET /health
+livenessProbe  GET /health
+```
+
+`main.py` also exposes `/ready` and `/healthcheck`, plus `/api/*` aliases for gateway paths.
+
+Important: health endpoints are defined before auth middleware and are listed in the middleware's public path prefixes.
+
+## CI Pipeline
+
+Build pipeline:
+
+```text
+linked_services/devops/pipeline/build/patientplus-backend.yml
+```
+
+Main behavior:
+
+- Triggers on `master` and `develop`.
+- Verifies/generates a branch-based Docker tag.
+- Runs `az acr build` against the configured ACR.
+- Publishes `docker-tag.txt` as a pipeline artifact.
+
+The build passes `AZURE_KEY_VAULT_URL` as a Docker build argument, but the Dockerfile does not currently consume that argument. Runtime configuration is expected through environment/config map values.
+
+## CD Pipeline
+
+Deploy pipeline:
+
+```text
+linked_services/devops/pipeline/deploy/patientplus-backend.yml
+```
+
+Main behavior:
+
+- Manual environment parameter: `DEV`, `UAT`, or `PROD`.
+- Optional Docker tag parameter.
+- Loads common and environment-specific variable templates.
+- Downloads the Docker tag artifact from the CI pipeline when `DockerTag` is `latest`.
+- Prevents UAT/PROD deployment from a `develop` CI branch when using the latest artifact.
+- Replaces tokens in the Kubernetes manifest.
+- Deploys to AKS with `KubernetesManifest@1`.
+
+## Environment Variables In AKS
+
+The manifest directly sets:
+
+```text
+PY_ENV=production
+```
+
+Other settings come from the configured ConfigMap. At minimum, the application expects:
+
+```text
+AZURE_KEY_VAULT_URL
+URL_ALLOWED_ORIGINS
+```
+
+Secrets such as SQL credentials and Ping OAuth credentials should remain in Azure Key Vault, not in the ConfigMap.
+
+## Operational Dependencies
+
+The backend needs these external dependencies at runtime:
+
+- Azure Key Vault reachable from the workload.
+- Managed identity or local credential with secret read permission.
+- SQL Server reachable over the network.
+- A SQL Server ODBC driver installed in the runtime.
+- PingFederate token endpoint reachable from the backend.
+- Required prompt/database tables present.
+
+## Common Failure Points
+
+### Startup Fails Before Serving Traffic
+
+Likely causes:
+
+- `AZURE_KEY_VAULT_URL` missing.
+- Workload Identity not configured.
+- Managed identity lacks Key Vault secret permission.
+- SQL secrets missing from Key Vault.
+- SQL Server unreachable.
+- No SQL Server ODBC driver installed.
+
+`main.py` intentionally fails startup if database initialization fails.
+
+### Protected Routes Return 401
+
+Likely causes:
+
+- Missing `access_token` cookie/header.
+- Token has no `sub` claim.
+- Token expired.
+- User does not exist or is inactive in `uam_users`.
+
+### Protected Routes Return 503
+
+Likely causes:
+
+- Database lookup failed.
+- Key Vault is unreachable on a cold auth secret cache.
+- PingFederate refresh request failed and auth middleware hit an unexpected exception.
+
+### First Auth Request Is Slow
+
+`main.py` starts a background `warm_secrets()` call to reduce this. If the warm-up fails, the first auth request will retry Key Vault reads synchronously.
+
+## Adding A New Endpoint
+
+1. Create a new folder under `app/api`, for example `app/api/reports`.
+2. Add `router.py`.
+3. Define `router = APIRouter()`.
+4. Add route handlers to that router.
+5. Restart the app.
+
+The prefix is generated automatically from the folder path, so `app/api/reports/router.py` becomes `/api/reports`.
+
+## Adding A New Secret
+
+1. Store the secret in Azure Key Vault using hyphen-case, for example `new-service-token`.
+2. Read it with `VaultHandler.get_secret("new-service-token")`.
+3. For local fallback, set `NEW_SERVICE_TOKEN`.
+4. Avoid adding secret values to `.env`, Docker build args, ConfigMaps, or source control.

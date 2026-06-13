@@ -1,0 +1,234 @@
+# Data Access And Domain Models
+
+## Files
+
+```text
+app/models/base_model.py
+app/db/database.py
+app/models/*.py
+```
+
+## Role In The Backend
+
+This component owns SQL Server connectivity, SQLAlchemy model
+definitions, data-access builders, and common serialization helpers.
+
+The route layer mostly delegates database work to builder classes under
+`app/models`.
+
+## Engine And Session Factory
+
+[app/models/base_model.py](../../app/models/base_model.py) defines
+`BaseModelBuilder`.
+
+Important members:
+
+```text
+_engine
+_SessionLocal
+_Base
+```
+
+`BaseModelBuilder.init()`:
+
+1. Reads SQL secrets from Key Vault through `VaultHandler`.
+2. Detects an installed SQL Server ODBC driver.
+3. Builds a `mssql+pyodbc` SQLAlchemy connection string.
+4. Creates the SQLAlchemy engine.
+5. Creates a `sessionmaker`.
+
+The engine uses:
+
+```text
+pool_pre_ping=True
+pool_recycle=300
+pool_size=10
+max_overflow=20
+pool_timeout=10
+```
+
+`BaseModelBuilder.session()` returns a SQLAlchemy session. If the
+session factory is unavailable, it clears the engine/sessionmaker and
+reinitializes them.
+
+## Shared Base And Audit Fields
+
+[app/db/database.py](../../app/db/database.py) exposes:
+
+```text
+Base = BaseModelBuilder()._Base
+AuditBase
+```
+
+Most ORM models inherit both `Base` and `AuditBase`.
+
+`AuditBase` adds:
+
+```text
+is_active
+created_by
+created_date
+updated_by
+updated_date
+```
+
+This creates a consistent soft-delete and audit pattern across UAM/
+reference tables.
+
+`UsersSessions` is one notable model that does not inherit `AuditBase`;
+it defines its own timestamp fields.
+
+## Serialization And UUID Helpers
+
+`row_to_dict(row)` converts SQLAlchemy ORM objects and `RowMapping` rows
+into JSON-safe dictionaries. It converts `datetime` values to ISO
+strings and UUIDs to strings.
+
+`MS_UUID` is a SQLAlchemy type decorator over SQL Server
+`UNIQUEIDENTIFIER`. It accepts Python `uuid.UUID` values or strings and
+returns Python UUID values from result rows.
+
+## Builder Pattern
+
+Each domain model usually has a matching builder class.
+
+Example:
+
+```text
+Users             -> UserBuilder
+Persona           -> PersonaBuilder
+DataSource        -> DataSourceBuilder
+PromptTemplate    -> PromptTemplateBuilder
+```
+
+Builders are used for:
+
+- Creating records through chainable setters.
+- Fetching active rows.
+- Encapsulating joins and SQLAlchemy queries.
+- Applying soft-delete filters.
+- Updating records and mappings.
+- Converting model rows into response-friendly dictionaries.
+
+Route handlers usually do request validation and then call a builder
+method. This keeps SQLAlchemy details out of most route code.
+
+## User And Access-Control Models
+
+```text
+app/models/users.py
+  uam_users
+  UserBuilder
+  Application users, roles, active status, admin list/update/delete
+  behavior.
+
+app/models/user_sessions.py
+  uam_users_sessions
+  UsersSessionsBuilder
+  Refresh-token/session persistence by MUD ID.
+
+app/models/user_persona_geography.py
+  uam_users_persona_geography
+  UsersPersonaGeographyBuilder
+  User assignment to persona and one or more geographies.
+
+app/models/persona.py
+  uam_persona
+  PersonaBuilder
+  Persona reference data.
+
+app/models/geography.py
+  uam_geography
+  GeographyBuilder
+  Geography reference data.
+
+app/models/persona_data_source.py
+  uam_persona_data_source
+  PersonaDataSourceBuilder
+  Persona-to-data-source access mapping.
+
+app/models/data_source.py
+  uam_data_source
+  DataSourceBuilder
+  Data-source records and admin configuration views.
+```
+
+These models drive authorization context and frontend filter
+availability.
+
+## Reference Metadata Models
+
+```text
+app/models/age_group.py
+  uam_age_group
+  AgeGroupBuilder
+
+app/models/disease_area.py
+  uam_disease_area
+  DiseaseAreaBuilder
+
+app/models/time_period.py
+  uam_time_period
+  TimePeriodBuilder
+
+app/models/fields_description.py
+  uam_fields_description
+  FieldsDescriptionBuilder
+```
+
+These support query/filter metadata and field descriptions used by the
+frontend.
+
+## Chat And Prompt Models
+
+```text
+app/models/ai_gen_query.py
+  ai_gen_query
+  AiGenQueryBuilder
+  Parent AI query records.
+
+app/models/ai_gen_query_conversations.py
+  ai_gen_query_conversations
+  AiGenQueryConversationsBuilder
+  Conversation history, search, status, and message shaping.
+
+app/models/prompt_template.py
+  app_prompt_templates
+  PromptTemplateBuilder
+  Active/versioned prompt template retrieval.
+```
+
+These are the database-facing pieces most directly related to the LLM
+experience.
+
+## Common Data Flow
+
+```text
+Route handler
+  |
+  v
+Builder method
+  |
+  v
+BaseModelBuilder.session()
+  |
+  v
+SQLAlchemy query or insert/update
+  |
+  v
+row_to_dict / custom response shaping
+  |
+  v
+JSONResponse
+```
+
+## When To Touch This Component
+
+Change this component when you need to:
+
+- Add or change database tables.
+- Add query methods for routes.
+- Change SQL Server connection behavior.
+- Modify soft-delete/audit behavior.
+- Optimize joins or pagination.
+- Adjust serialization of SQLAlchemy rows.
