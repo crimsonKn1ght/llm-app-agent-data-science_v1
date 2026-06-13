@@ -1,26 +1,30 @@
-# RAG Chatbot
+# LLM Chat Agent
 
-An async FastAPI chatbot that routes each user request through a LangGraph workflow. The application classifies the query, sends it to the right response node, streams progress and answer text back to the client, then stores the conversation for future turns.
+An async FastAPI service that routes user questions through a LangGraph workflow, streams progress and answer text as NDJSON, and stores conversation memory for follow-up turns.
 
-> Note: Some files under `documentation/` describe a larger or older architecture. The current application architecture is defined by the code under `app/`, `runtime/`, and `prompts/`.
+This repository contains the DS-side application only. A frontend can be hosted separately and call this service over HTTP.
 
 ## What It Does
 
 - Exposes a streaming chat endpoint at `POST /api/chat/generate`.
 - Uses an Anthropic-backed LLM client for classification, answering, synthesis, and memory compression.
-- Classifies internal queries as `insights` or `analytical`.
-- Runs web search only when the request sets `web_search=true`.
+- Classifies internal questions as `insights` or `analytical`.
+- Optionally runs web search when the request sets `web_search=true`.
 - Decomposes complex questions into up to 3 sub-queries.
 - Routes single-purpose requests to one node and mixed requests through parallel LangGraph branches.
-- Streams NDJSON events to the client while the workflow runs.
+- Streams `progress`, `text`, `error`, and `final_response` events to clients.
 - Persists conversation history as JSON files and compresses older history into a summary.
+- Provides lightweight conversation history, search, detail, and status endpoints for compatible frontends.
+
+This is not a classic RAG application at the moment: there is no vector database, embedding index, document chunk retrieval, or retrieval-augmented prompt pipeline in the current code. The only external lookup path is optional web search.
 
 ## Project Layout
 
 ```text
 app/
-  main.py                         FastAPI application and lifespan hook
-  api/routes.py                   Streaming chat API route
+  main.py                         FastAPI application, CORS, lifespan startup
+  api/health.py                   Health and readiness endpoints
+  api/routes.py                   Chat streaming and conversation API routes
   orchestrator/
     orchestrator_entry.py         Request lifecycle, state setup, memory save/load
     orchestrator_workflow.py      LangGraph nodes and edges
@@ -28,88 +32,46 @@ app/
     events.py                     Streaming event helpers
   nodes/
     router_node.py                Starts the graph and emits initial progress
-    query_analyzer.py             Internal LLM classification and decomposition
+    query_analyzer.py             LLM classification and decomposition
     insights_node.py              Qualitative answer generation
     analytical_node.py            LLM-based quantitative/structured reasoning
-    web_search_node.py            Web search plus LLM answer generation
+    web_search_node.py            Optional web search plus LLM answer generation
     summary_node.py               Final synthesis and response emission
-  memory/conversation_store.py    File-backed conversation persistence
+  memory/conversation_store.py    File-backed conversation persistence and lookup
 runtime/
   runtime_config.py               Runtime initialization
   llm_client.py                   Anthropic async client wrapper
   prompt_loader.py                YAML prompt loader
 prompts/prompts.yaml              System prompts and generation settings
+documentation/architecture_overview.md
 run.py                            Local uvicorn launcher
 ```
 
-## Request Workflow
+## API Overview
 
-```mermaid
-flowchart TD
-    A["Client"] --> B["POST /api/chat/generate"]
-    B --> C["FastAPI route creates stream_queue"]
-    C --> D["Start orchestrate() background task"]
-    C --> E["Return StreamingResponse as NDJSON"]
-
-    D --> F["Load or create conversation_id"]
-    F --> G["Load Runtime"]
-    G --> H["Load conversation memory"]
-    H --> I["Build initial GraphState"]
-    I --> J["Invoke compiled LangGraph"]
-
-    J --> K["router_node"]
-    K --> L["query_analyzer_node"]
-    L --> M{"route_after_analysis()"}
-
-    M -- "insights" --> N["insights_node"]
-    M -- "analytical" --> O["analytical_node"]
-    M -- "web_search=true + insights" --> Q1["parallel_insights_web"]
-    M -- "web_search=true + analytical" --> Q2["parallel_analytical_web"]
-
-    Q1 --> N
-    Q1 --> P["web_search_node"]
-    Q2 --> O
-    Q2 --> P
-
-    N --> R["summary_node"]
-    O --> R
-    P --> R
-
-    R --> S["Emit final_response"]
-    S --> T["Save turn"]
-    T --> U["Compress old history if needed"]
-
-    E --> V["event_generator"]
-    V --> W["Client receives progress/text/error/final_response events"]
-```
-
-## Streaming API
-
-### Request
+### Chat Generation
 
 ```http
 POST /api/chat/generate
 Content-Type: application/json
+Accept: application/x-ndjson
 ```
 
 ```json
 {
   "user_query": "Explain the difference between supervised and unsupervised learning",
-  "conversation_id": "optional-existing-conversation-id",
+  "conversation_id": "optional-existing-uuid",
   "web_search": false
 }
 ```
 
-`conversation_id` is optional. If omitted, the orchestrator generates a UUID and starts a new conversation. `web_search` defaults to `false`; when set to `true`, the workflow runs the web search node in addition to the internal insights or analytical node.
+`conversation_id` is optional. If omitted or invalid, the orchestrator starts a new UUID-backed conversation. `web_search` defaults to `false`.
 
-### Response Format
-
-The endpoint returns `application/x-ndjson`. Each line is a JSON event:
+The response is `application/x-ndjson`, one JSON object per line:
 
 ```json
 {"type":"progress","message":"Analyzing your query...","origin":"system"}
 {"type":"text","text":"## Insights\n\n","origin":"insights"}
-{"type":"text","text":"Supervised learning...","origin":"insights"}
 {"type":"final_response","content":"## Summary\n\n- ..."}
 ```
 
@@ -122,76 +84,100 @@ Possible event types:
 | `error` | User-facing error message |
 | `final_response` | Complete response assembled by `summary_node` |
 
+### Conversation Endpoints
+
+These endpoints use the local JSON conversation store:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/chat/history` | Recent saved conversations |
+| `GET` | `/api/chat/search?q=term` | Search saved conversation messages |
+| `GET` | `/api/chat/status?conversation_id=<uuid>` | Basic existence and message counts |
+| `GET` | `/api/chat/{conversation_id}` | Full conversation history and summary |
+
+### Health And Readiness
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/health` | Basic liveness check |
+| `GET` | `/ready` | Runtime readiness check |
+| `GET` | `/api/health` | API-prefixed liveness alias |
+| `GET` | `/api/ready` | API-prefixed readiness alias |
+
 ## Local Setup
 
-1. Create and activate a Python virtual environment.
-2. Install dependencies:
+Create and activate a Python virtual environment:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+Install dependencies:
 
 ```powershell
 pip install -r requirements.txt
 ```
 
-3. Configure environment variables, for example in `.env`:
+Create a `.env` file from `.env.example` and set at least:
 
 ```env
 ANTHROPIC_API_KEY=your_api_key
-CLAUDE_MODEL=claude-haiku-4-5-20251001
-CONVERSATIONS_DIR=conversations
-MAX_HISTORY_TURNS=20
-KEEP_RECENT_TURNS=10
-BRAVE_SEARCH_API_KEY=
-LLM_TIMEOUT_SECONDS=60
-LLM_MAX_RETRIES=2
-WEB_SEARCH_TIMEOUT_SECONDS=15
-WEB_SEARCH_MAX_RETRIES=1
 ```
 
-4. Run the app:
+Run the API:
 
 ```powershell
 python run.py
 ```
 
-The API will be available at `http://localhost:8000`.
+The service listens at:
 
-## Tests
+```text
+http://localhost:8000
+```
 
-Run tests from a virtual environment with project dependencies installed so API, Pydantic, and LangGraph tests are not skipped:
+Useful checks:
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python -m compileall app runtime tests
-python -m unittest discover -s tests
+Invoke-RestMethod http://localhost:8000/health
+Invoke-RestMethod http://localhost:8000/api/ready
 ```
+
+## Frontend Integration
+
+A separate frontend can call this service directly.
+
+For local development, allow the frontend origin in `.env`:
+
+```env
+URL_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+```
+
+The frontend should point its API base URL at:
+
+```text
+http://localhost:8000
+```
+
+The chat UI should consume `POST /api/chat/generate` as an incremental NDJSON stream and can optionally use the conversation endpoints for history, search, and reload.
 
 ## Runtime Configuration
 
-`runtime/runtime_config.py` initializes:
+| Variable | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `ANTHROPIC_API_KEY` | Yes | None | Anthropic API key used by `LLMClient` |
+| `CLAUDE_MODEL` | No | `claude-haiku-4-5-20251001` | Model name |
+| `LLM_TIMEOUT_SECONDS` | No | `60` | Timeout for each LLM call attempt |
+| `LLM_MAX_RETRIES` | No | `2` | Retry count after LLM call failures |
+| `CONVERSATIONS_DIR` | No | `conversations` | Conversation JSON storage directory |
+| `MAX_HISTORY_TURNS` | No | `20` | Compress once history exceeds this many messages |
+| `KEEP_RECENT_TURNS` | No | `10` | Recent messages retained after compression |
+| `BRAVE_SEARCH_API_KEY` | No | Empty | Optional fallback for web search |
+| `WEB_SEARCH_TIMEOUT_SECONDS` | No | `15` | Timeout for each web search attempt |
+| `WEB_SEARCH_MAX_RETRIES` | No | `1` | Retry count after web search failures |
+| `URL_ALLOWED_ORIGINS` | No | Local Vite origins | Comma-separated CORS origins for external frontends |
 
-- `LLMClient`, using `ANTHROPIC_API_KEY`, `CLAUDE_MODEL`, timeout, and retry settings.
-- `PromptLoader`, reading `prompts/prompts.yaml`.
-- The compiled LangGraph from `build_orchestrator_graph()`.
+## Architecture Detail
 
-This runtime object is attached to every `GraphState` so nodes can access the LLM client, prompt settings, and compiled workflow.
-
-## Conversation Memory
-
-Conversation state is stored as JSON files in `CONVERSATIONS_DIR`:
-
-```json
-{
-  "history": [
-    {"role": "user", "content": "..."},
-    {"role": "assistant", "content": "..."}
-  ],
-  "summary": "Compressed summary of older turns"
-}
-```
-
-When history exceeds `MAX_HISTORY_TURNS`, older turns are summarized with the `conversation_summary` prompt and only the latest `KEEP_RECENT_TURNS` messages are retained.
-
-## More Architecture Detail
-
-See `documentation/architecture_overview.md` for the high-level architecture, layer responsibilities, and detailed Mermaid diagrams.
+See `documentation/architecture_overview.md` for the current workflow, layers, request lifecycle, and streaming contract.
