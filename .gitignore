@@ -1,8 +1,11 @@
 __pycache__/
 *.pyc
+.venv/
 .env
+tests/
 conversations/*.json
 logs/*.log
+/package-lock.json
 frontend/node_modules/
 frontend/dist/
 frontend/coverage/

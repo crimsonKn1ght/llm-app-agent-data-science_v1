@@ -6,6 +6,7 @@ import os
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -48,6 +49,36 @@ def _conv_path(conversation_id: str) -> Path:
 
 def _empty_data() -> Dict[str, Any]:
     return {"history": [], "summary": ""}
+
+
+def _iso_from_mtime(path: Path) -> str:
+    return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
+
+
+def _title_from_history(history: List[Dict[str, str]], max_chars: int = 80) -> str:
+    for item in history:
+        if item.get("role") == "user":
+            title = " ".join(item.get("content", "").split())
+            if len(title) > max_chars:
+                return f"{title[: max_chars - 1].rstrip()}..."
+            return title or "Untitled conversation"
+    return "Untitled conversation"
+
+
+def _snippet(text: str, term: str, radius: int = 70) -> str:
+    normalized_text = " ".join(text.split())
+    if not normalized_text:
+        return ""
+
+    index = normalized_text.lower().find(term.lower())
+    if index < 0:
+        return normalized_text[: radius * 2].rstrip()
+
+    start = max(0, index - radius)
+    end = min(len(normalized_text), index + len(term) + radius)
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(normalized_text) else ""
+    return f"{prefix}{normalized_text[start:end].strip()}{suffix}"
 
 
 def _normalize_data(data: Any) -> Dict[str, Any]:
@@ -118,6 +149,111 @@ def load(conversation_id: str) -> Optional[Dict[str, Any]]:
         if not path.exists():
             return None
         return _read_data(path)
+
+
+def list_conversations(limit: int = 50) -> List[Dict[str, Any]]:
+    root = _conversations_root()
+    items: List[Dict[str, Any]] = []
+
+    for path in root.glob("*.json"):
+        try:
+            conversation_id = normalize_conversation_id(path.stem)
+        except ValueError:
+            continue
+
+        with _conversation_lock(conversation_id):
+            if not path.exists():
+                continue
+            data = _read_data(path)
+            if not path.exists():
+                continue
+
+        history = data["history"]
+        items.append(
+            {
+                "conversation_id": conversation_id,
+                "title": _title_from_history(history),
+                "updated_at": _iso_from_mtime(path),
+                "message_count": len(history),
+            }
+        )
+
+    items.sort(key=lambda item: item["updated_at"], reverse=True)
+    return items[:limit]
+
+
+def conversation_status(conversation_id: str) -> Dict[str, Any]:
+    conversation_id = normalize_conversation_id(conversation_id)
+    path = _conv_path(conversation_id)
+    with _conversation_lock(conversation_id):
+        if not path.exists():
+            return {
+                "conversation_id": conversation_id,
+                "exists": False,
+                "message_count": 0,
+                "updated_at": None,
+            }
+        data = _read_data(path)
+        if not path.exists():
+            return {
+                "conversation_id": conversation_id,
+                "exists": False,
+                "message_count": 0,
+                "updated_at": None,
+            }
+        return {
+            "conversation_id": conversation_id,
+            "exists": True,
+            "message_count": len(data["history"]),
+            "updated_at": _iso_from_mtime(path),
+        }
+
+
+def search_conversations(query: str, limit: int = 25) -> List[Dict[str, Any]]:
+    term = " ".join(query.split())
+    if not term:
+        return []
+
+    root = _conversations_root()
+    items: List[Dict[str, Any]] = []
+
+    for path in root.glob("*.json"):
+        try:
+            conversation_id = normalize_conversation_id(path.stem)
+        except ValueError:
+            continue
+
+        with _conversation_lock(conversation_id):
+            if not path.exists():
+                continue
+            data = _read_data(path)
+            if not path.exists():
+                continue
+
+        matches = []
+        for item in data["history"]:
+            content = item.get("content", "")
+            if term.lower() not in content.lower():
+                continue
+            matches.append(
+                {
+                    "role": item.get("role", "assistant"),
+                    "snippet": _snippet(content, term),
+                }
+            )
+
+        if matches:
+            items.append(
+                {
+                    "conversation_id": conversation_id,
+                    "title": _title_from_history(data["history"]),
+                    "updated_at": _iso_from_mtime(path),
+                    "matches": matches[:3],
+                }
+            )
+
+    items.sort(key=lambda item: item["updated_at"], reverse=True)
+    return items[:limit]
 
 
 def build_context(conv_data: Dict[str, Any]) -> Tuple[List[Dict[str, str]], str]:
