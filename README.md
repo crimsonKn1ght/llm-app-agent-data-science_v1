@@ -1,8 +1,17 @@
 # LLM Chat Agent
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg?style=flat)](requirements.txt)
+[![FastAPI](https://img.shields.io/badge/FastAPI-async-009688.svg?style=flat)](requirements.txt)
+[![LangGraph](https://img.shields.io/badge/LangGraph-workflow-1c3c3c.svg?style=flat)](app/orchestrator/orchestrator_workflow.py)
+
 An async FastAPI service that routes user questions through a LangGraph workflow, streams progress and answer text as NDJSON, and stores conversation memory for follow-up turns.
 
-This repository contains the DS-side application only. A frontend can be hosted separately and call this service over HTTP.
+This repository contains the DS-side application only. The companion UI lives in
+[llm-app-agent-frontend_v1](https://github.com/crimsonKn1ght/llm-app-agent-frontend_v1)
+and calls this service over HTTP.
+
+![High-level architecture](high-lvl-arch.svg)
 
 ## What It Does
 
@@ -180,4 +189,9 @@ The chat UI should consume `POST /api/chat/generate` as an incremental NDJSON st
 
 ## Architecture Detail
 
-See `documentation/architecture_overview.md` for the current workflow, layers, request lifecycle, and streaming contract.
+See [`documentation/architecture_overview.md`](documentation/architecture_overview.md) for the current workflow, layers, request lifecycle, and streaming contract.
+
+The diagram below traces one request end to end, from the route handler through the
+orchestrator and graph nodes to the final synthesised response.
+
+![Request lifecycle](architecture.svg)
